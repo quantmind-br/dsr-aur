@@ -1,0 +1,5 @@
+[dsr-cadcraft-bin]
+source = "github"
+github = "storytold/cadcraft"
+use_latest_release = true
+prefix = "v"

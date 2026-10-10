@@ -1,0 +1,36 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+pkgname=dsr-cadcraft-bin
+_name=cadcraft
+pkgver=0.4.0
+pkgrel=1
+pkgdesc='Clean-room AutoCAD-style CAD and drafting app in Rust (upstream release build)'
+arch=('x86_64')
+url='https://github.com/storytold/cadcraft'
+license=('Apache-2.0' 'MIT')
+# eframe/wgpu/winit load the windowing and GPU libraries at run time (dlopen).
+depends=('glibc' 'libgcc' 'hicolor-icon-theme' 'libxkbcommon' 'wayland' 'vulkan-icd-loader' 'libglvnd')
+optdepends=('libx11: X11 fallback'
+            'libxcursor: X11 fallback'
+            'libxi: X11 fallback'
+            'libxrandr: X11 fallback'
+            'xdg-desktop-portal: file open and save dialogs')
+provides=("$_name=${epoch:+$epoch:}$pkgver")
+conflicts=("$_name" "$_name-bin" "$_name-git" 'dsr-cadcraft')
+options=('!strip')
+source=("$_name-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_name-$pkgver-linux-x86_64.tar.gz"
+        "$_name-$pkgver.mime.xml::$url/raw/v$pkgver/packaging/linux/ai.storyteller.$_name.mime.xml")
+sha256sums=('de5b5e61fb157f1ae54ae0a393b57e86cd1c354fea8b085292890faa210cf778'
+            '80c69991d06d7dae9bd4a7e73e9ff318d9ba2adf63f101c57ee1be55848ffa6a')
+
+package() {
+  cd "$_name-$pkgver-linux-x86_64"
+  install -Dm755 "bin/$_name" "bin/$_name-cli" -t "$pkgdir/usr/bin"
+  install -Dm644 "share/applications/ai.storyteller.$_name.desktop" -t "$pkgdir/usr/share/applications"
+  install -Dm644 "share/metainfo/ai.storyteller.$_name.metainfo.xml" -t "$pkgdir/usr/share/metainfo"
+  install -Dm644 "$srcdir/$_name-$pkgver.mime.xml" "$pkgdir/usr/share/mime/packages/ai.storyteller.$_name.xml"
+  local icon
+  for icon in share/icons/hicolor/*/apps/"ai.storyteller.$_name.png"; do
+    install -Dm644 "$icon" "$pkgdir/usr/${icon}"
+  done
+  install -Dm644 "share/doc/$_name/LICENSE-APACHE" "share/doc/$_name/LICENSE-MIT" -t "$pkgdir/usr/share/licenses/$pkgname"
+}
