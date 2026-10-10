@@ -11,6 +11,7 @@ services:
       REPO_NAME: dsr-aur
       BUILD_INTERVAL: ${BUILD_INTERVAL:-6h}
       PACKAGER: ${PACKAGER:-quantmind-br <dsrodrigues20@gmail.com>}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     cpus: ${BUILDER_CPUS:-1.5}
     mem_limit: ${BUILDER_MEMORY:-6g}
     volumes:

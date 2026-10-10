@@ -28,6 +28,22 @@ Then `sudo pacman -Sy <package>`.
   before the packages that need them. Pin a reviewed revision with
   `name@<commit>`.
 - **Local PKGBUILD:** create `pkgs/<name>/PKGBUILD` with its source files.
+  Add `pkgs/<name>/.nvchecker.toml` (section named after the package) to
+  follow upstream releases: each cycle the builder asks
+  [nvchecker](https://github.com/lilydjwg/nvchecker) for the latest version
+  and, when newer, rewrites `pkgver`, resets `pkgrel=1` and runs
+  `updpkgsums` before building. The version must be a valid `pkgver` (no
+  `-`), so strip prefixes in the nvchecker config:
+
+  ```toml
+  [dsr-foo-bin]
+  source = "github"
+  github = "owner/foo"
+  use_latest_release = true
+  prefix = "v"
+  ```
+
+  VCS packages (`pkgver()`) update without it.
 
 Push to `main`. Dokploy redeploys the stack, and the builder builds on startup.
 
@@ -82,3 +98,4 @@ Settings (Dokploy environment):
 | `BUILDER_CPUS` | `1.5` | CPU limit for the builder |
 | `BUILDER_MEMORY` | `6g` | Memory limit for the builder |
 | `PACKAGER` | `quantmind-br <dsrodrigues20@gmail.com>` | Packager recorded in built packages |
+| `GITHUB_TOKEN` | unset | Token for nvchecker's GitHub queries (lifts the 60 requests/hour limit); never exposed to builds |

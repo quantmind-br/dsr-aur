@@ -22,6 +22,7 @@ ARCH=$(uname -m)
 REPO_DIR=$REPO_ROOT/$ARCH
 DB=$REPO_DIR/$REPO_NAME.db.tar.gz
 SIGN_GNUPGHOME=$STATE_DIR/gnupg
+NVCHECKER_KEYFILE=$STATE_DIR/nvchecker-keys.toml
 
 # makepkg reads these from the environment, overriding makepkg.conf.
 export PKGDEST=$WORK_DIR/out
@@ -32,6 +33,7 @@ SIGN_KEY=
 PRUNE=1
 SOURCES=()
 FAILED=()
+declare -A LOCAL_SOURCES=()
 
 log() { printf '==> %s\n' "$*" >&2; }
 warn() { printf '==> WARNING: %s\n' "$*" >&2; }
@@ -62,6 +64,15 @@ setup_signing() {
   SIGN_KEY=$(gpg_sign --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')
   gpg_sign --armor --export "$SIGN_KEY" >"$REPO_ROOT/$REPO_NAME.asc"
   log "Signing with key $SIGN_KEY"
+}
+
+# Move the GitHub token into a root-only nvchecker keyfile, out of the build environment.
+setup_nvchecker() {
+  rm -f "$NVCHECKER_KEYFILE"
+  if [[ -n ${GITHUB_TOKEN:-} ]]; then
+    (umask 077 && printf '[keys]\ngithub = "%s"\n' "$GITHUB_TOKEN" >"$NVCHECKER_KEYFILE")
+  fi
+  unset GITHUB_TOKEN
 }
 
 # Expose the repository to pacman so packages can depend on each other.
@@ -129,6 +140,33 @@ install_deps() {
   pacman -Sy --noconfirm --needed --asdeps "${deps[@]}"
 }
 
+# Bump pkgver to the latest upstream version reported by .nvchecker.toml.
+# Only local packages get here, so the nvchecker config is trusted and runs as root.
+update_version() {
+  local name=$1 srcinfo current latest
+  local -a keys=()
+  [[ -f .nvchecker.toml ]] || return 0
+  [[ -f $NVCHECKER_KEYFILE ]] && keys=(-k "$NVCHECKER_KEYFILE")
+
+  srcinfo=$(as_builder makepkg --printsrcinfo) || return 1
+  current=$(srcinfo_global pkgver "$srcinfo")
+  latest=$(nvchecker --logger json -c .nvchecker.toml "${keys[@]}" 2>/dev/null |
+    jq -r 'select(.version != null) | .version' | head -n 1)
+  if [[ -z $latest ]]; then
+    warn "nvchecker found no upstream version for $name; keeping $current"
+    return 0
+  fi
+  if [[ ! $latest =~ ^[[:alnum:]._+]+$ ]]; then
+    warn "Upstream version '$latest' of $name is not a valid pkgver; keeping $current"
+    return 0
+  fi
+  (( $(vercmp "$latest" "$current") > 0 )) || return 0
+
+  log "Updating $name from $current to $latest"
+  as_builder sed -i -e "s/^pkgver=.*/pkgver=$latest/" -e 's/^pkgrel=.*/pkgrel=1/' PKGBUILD &&
+    as_builder updpkgsums >/dev/null
+}
+
 remove_new_deps() {
   local -a extra
   mapfile -t extra < <(comm -13 "$1" <(pacman -Qq | sort))
@@ -158,6 +196,9 @@ publish() {
 build_package() {
   local name=$1 srcinfo deps_before=$WORK_DIR/deps-before
   cd "$WORK_DIR/sources/$name" || return 1
+  if [[ -n ${LOCAL_SOURCES[$name]:-} ]] && ! is_vcs; then
+    update_version "$name" || return 1
+  fi
   srcinfo=$(as_builder makepkg --printsrcinfo) || return 1
 
   if ! is_vcs && is_published; then
@@ -222,6 +263,7 @@ collect_sources() {
     cp -r "$dir" "$WORK_DIR/sources/$name"
     chown -R "$BUILD_USER:$BUILD_USER" "$WORK_DIR/sources/$name"
     SOURCES+=("$name")
+    LOCAL_SOURCES[$name]=1
   done
 }
 
@@ -272,6 +314,7 @@ build_once() {
 
   setup_system
   setup_signing
+  setup_nvchecker
   register_repo
   collect_sources
 

@@ -2,7 +2,7 @@ FROM archlinux:base-devel
 
 # QEMU user-mode emulation does not support pacman's seccomp download sandbox.
 RUN sed -i 's/^#DisableSandboxSyscalls/DisableSandboxSyscalls/' /etc/pacman.conf \
-    && pacman -Syu --noconfirm --needed ccache git \
+    && pacman -Syu --noconfirm --needed ccache git jq nvchecker pacman-contrib \
     && rm -rf /var/cache/pacman/pkg/* \
     && useradd --create-home builder
 
