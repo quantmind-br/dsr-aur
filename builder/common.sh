@@ -34,11 +34,12 @@ check_tools() {
 # Fails when the database exists but cannot be read or holds an incomplete entry, so callers
 # never mistake that for "empty".
 db_versions() {
-  local entries
+  local entries descs records
   [[ -e $DB ]] || return 0
   entries=$(tar -tf "$DB") || return 1
-  grep -q '/desc$' <<<"$entries" || return 0
-  tar -xOf "$DB" --wildcards '*/desc' | awk '
+  descs=$(grep -c '/desc$' <<<"$entries" || true)
+  (( descs )) || return 0
+  records=$(tar -xOf "$DB" --wildcards '*/desc' | awk '
     function flush() {
       if (name != "" || version != "" || file != "") {
         if (name == "" || version == "" || file == "") bad = 1
@@ -49,13 +50,12 @@ db_versions() {
     $0 == "%FILENAME%" { flush(); getline file; next }
     $0 == "%NAME%" { getline name; next }
     $0 == "%VERSION%" { getline version; next }
-    END { flush(); exit bad }'
+    END { flush(); exit bad }') || return 1
+  # Every desc file must yield exactly one complete entry.
+  [[ $(grep -c . <<<"$records" || true) == "$descs" ]] || return 1
+  printf '%s\n' "$records"
 }
 
-# The database is gone although packages remain: a lost database, not an empty repository.
-db_lost() {
-  [[ ! -e $DB ]] && compgen -G "$REPO_DIR/*.pkg.tar.*" >/dev/null
-}
 
 # Run "$0 once" now and every $1 (sleep syntax). A stop signal waits for the running cycle.
 run_loop() {

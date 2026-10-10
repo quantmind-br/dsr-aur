@@ -32,6 +32,13 @@ RUN_REJECTED=()
 
 gpg_sign() { GNUPGHOME=$SIGN_GNUPGHOME gpg --batch --pinentry-mode loopback "$@"; }
 
+# The database is gone although the repository was initialized or packages remain: a lost
+# database, not an empty repository. Publishing would create a new database listing only the
+# new packages, and everything else would then look unreferenced.
+db_lost() {
+  [[ ! -e $DB ]] && { [[ -f $STATE_DIR/db-initialized ]] || compgen -G "$REPO_DIR/*.pkg.tar.*" >/dev/null; }
+}
+
 # POST a message to an ntfy topic URL (title and priority as ntfy headers).
 send_notification() {
   [[ -n $NOTIFY_URL ]] || return 0
@@ -357,12 +364,7 @@ builder_silent() {
 cleanup_unreferenced() {
   local listing state=$STATE_DIR/unreferenced now file base since
   local -A referenced=() first_seen=()
-  if db_lost; then
-    warn "The database is missing but packages remain; not deleting anything"
-    alert database "dsr-aur: database missing" "$DB is missing while packages remain; nothing is deleted until it is restored."
-    return 0
-  fi
-  resolve database "dsr-aur: database back" "The repository database is present again."
+  db_lost && return 0
   if ! listing=$(db_versions); then
     warn "Cannot read the database; not cleaning up"
     return 0
@@ -404,7 +406,14 @@ publish_once() {
   setup_signing
   check_versions || warn "Upstream version check failed"
   failed=0
-  publish_incoming || failed=1
+  if db_lost; then
+    warn "The database is missing; holding every batch until it is restored"
+    alert database "dsr-aur: database missing" "$DB is missing although the repository was initialized. Publishing, pruning and deletions are on hold until it is restored."
+  else
+    resolve database "dsr-aur: database back" "The repository database is present again."
+    publish_incoming || failed=1
+  fi
+  if [[ -e $DB ]]; then touch "$STATE_DIR/db-initialized"; fi
   rm -rf "$RECEIVE_DIR"
   if (( ${#RUN_FAILED[@]} + ${#RUN_REJECTED[@]} )); then
     alert build-failures "dsr-aur: build failures" \
