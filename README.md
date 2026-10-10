@@ -200,7 +200,8 @@ ssh quantforge "docker start $P-publisher-1"
 **Rotate** (key lost or exposed):
 
 1. Generate the new key next to the old one:
-   `docker exec $P-publisher-1 env GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --passphrase '' --quick-gen-key "dsr-aur repository signing key" ed25519 sign never`.
+   `docker exec $P-publisher-1 env GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --yes --pinentry-mode loopback --passphrase '' --quick-gen-key "dsr-aur repository signing key" ed25519 sign never`
+   (`--yes` because a key with that user ID already exists).
    Within a minute `dsr-aur.asc` carries both public keys.
 2. On every client: `curl -fsSL https://aur.quantforge.com.br/dsr-aur.asc | sudo pacman-key --add -`
    and `sudo pacman-key --lsign-key <new fingerprint>`.
