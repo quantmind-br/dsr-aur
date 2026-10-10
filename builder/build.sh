@@ -545,6 +545,8 @@ write_batch() {
 report_abort() {
   local status=$?
   (( BATCH_WRITTEN )) && return
+  # Stopped by a redeploy or "docker stop": not a failure, the next cycle reruns.
+  [[ -e $STOP_MARKER ]] && return
   warn "Cycle aborted during $PHASE"
   FAILED+=("cycle-aborted-in-$PHASE")
   PRUNE=0

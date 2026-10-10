@@ -57,10 +57,14 @@ db_versions() {
 }
 
 
-# Run "$0 once" now and every $1 (sleep syntax). A stop signal waits for the running cycle.
+STOP_MARKER=/run/dsr-stopping
+
+# Run "$0 once" now and every $1 (sleep syntax). A stop signal waits for the running cycle,
+# which sees $STOP_MARKER and knows it is being stopped rather than failing.
 run_loop() {
   local interval=$1 child=
-  trap 'if [[ -n $child ]]; then kill -TERM "$child" 2>/dev/null; wait "$child"; fi; exit 0' TERM INT
+  rm -f "$STOP_MARKER"
+  trap 'touch "$STOP_MARKER"; if [[ -n $child ]]; then kill -TERM "$child" 2>/dev/null; wait "$child"; fi; exit 0' TERM INT
   while :; do
     "$0" once &
     child=$!
