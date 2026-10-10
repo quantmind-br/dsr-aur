@@ -1,0 +1,6 @@
+[Unit]
+Description=Check installed dsr-aur packages for missing libraries and symbols
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/dsr-aur-check

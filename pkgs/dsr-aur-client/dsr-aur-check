@@ -1,0 +1,111 @@
+#!/bin/bash
+# Check the installed dsr-aur packages for libraries or symbols they can no longer find, notify,
+# and ask the builder to rebuild the broken ones. Runs as the desktop user after every pacman
+# transaction (dsr-aur-check.path), or by hand.
+#
+# Settings in ~/.config/dsr-aur-check.conf (shell syntax):
+#   NOTIFY_URL=https://ntfy.sh/<topic>   also send alerts to this ntfy topic
+#   BUILDER_SSH=quantforge               SSH host of the builder; empty: never request rebuilds
+#   BUILDER_CONTAINER=<name>             builder container on that host
+set -uo pipefail
+
+NOTIFY_URL=
+BUILDER_SSH=quantforge
+BUILDER_CONTAINER=compose-quantify-neural-alarm-8a391p-builder-1
+config=${XDG_CONFIG_HOME:-$HOME/.config}/dsr-aur-check.conf
+# shellcheck source=/dev/null
+[[ -r $config ]] && source "$config"
+state=${XDG_STATE_HOME:-$HOME/.local/state}/dsr-aur-check
+mkdir -p "$state/baseline"
+
+is_elf() { [[ -f $1 && ! -L $1 && $(head -c 4 "$1" 2>/dev/null) == $'\x7fELF' ]]; }
+
+# Missing libraries of any ELF file; undefined symbols only for executables, since plugins and
+# language modules legitimately leave symbols to the program that loads them.
+file_problems() {
+  local out
+  out=$(LC_ALL=C ldd -r "$1" 2>&1)
+  sed -nE 's/^[[:space:]]*([^[:space:]]+) => not found.*/\1 not found/p' <<<"$out"
+  if LC_ALL=C readelf -l "$1" 2>/dev/null | grep -q 'program interpreter'; then
+    grep -oE 'undefined symbol: [^[:space:](,]+' <<<"$out"
+  fi
+  return 0
+}
+
+# Entry points: ELF files in /usr/bin and the targets /usr/bin wrappers exec.
+entry_points() {
+  local file
+  while read -r file; do
+    [[ $file == /usr/bin/* && -f $file ]] || continue
+    if is_elf "$file"; then
+      echo "$file"
+    else
+      grep -oE '^[[:space:]]*exec[[:space:]]+"?/[^" ]+' "$file" 2>/dev/null | grep -oE '/[^" ]+$'
+    fi
+  done
+}
+
+# Problems of one package. Entry points always count; other files (bundled helpers and plugins
+# often reference libraries they never load) count only when they were fine when this package
+# version was first checked.
+package_problems() {
+  local pkg=$1 version files baseline file line
+  local -A entry=()
+  version=$(pacman -Q "$pkg" | cut -d ' ' -f 2)
+  files=$(pacman -Qlq "$pkg" | grep -v '/$')
+  while read -r file; do entry[$file]=1; done < <(entry_points <<<"$files")
+  baseline=$state/baseline/$pkg-$version
+  local -a found=()
+  while read -r file; do
+    is_elf "$file" || continue
+    while read -r line; do
+      [[ -n $line ]] && found+=("${entry[$file]:+entry }$file: $line")
+    done < <(file_problems "$file")
+  done <<<"$files"
+  if [[ ! -f $baseline ]]; then
+    printf '%s\n' "${found[@]}" | grep -v '^entry ' >"$baseline"
+  fi
+  for line in "${found[@]}"; do
+    if [[ $line == entry\ * ]] || ! grep -qxF -- "$line" "$baseline"; then
+      echo "$pkg: ${line#entry }"
+    fi
+  done
+}
+
+send() {
+  notify-send --app-name=dsr-aur -u "$1" "$2" "$3" 2>/dev/null
+  if [[ -n $NOTIFY_URL ]]; then
+    curl -fsS --max-time 20 -H "Title: $2" -H "Tags: package" --data-binary "$3" "$NOTIFY_URL" >/dev/null 2>&1
+  fi
+  return 0
+}
+
+mapfile -t packages < <(pacman -Qq | grep '^dsr-')
+problems=$(for pkg in "${packages[@]}"; do package_problems "$pkg"; done)
+# Baselines of versions no longer installed are dropped.
+for file in "$state"/baseline/*; do
+  [[ -e $file ]] || continue
+  name=${file##*/}
+  pacman -Q "${name%-*-*}" 2>/dev/null | tr ' ' '-' | grep -qxF -- "$name" || rm -f "$file"
+done
+
+previous=$(cat "$state/last" 2>/dev/null)
+[[ $problems == "$previous" ]] && exit 0
+printf '%s' "$problems" >"$state/last"
+
+if [[ -z $problems ]]; then
+  send normal "dsr-aur: packages fixed" "Every installed dsr-aur package finds its libraries again."
+  exit 0
+fi
+broken=$(cut -d : -f 1 <<<"$problems" | sort -u | paste -sd ' ' -)
+echo "$problems"
+send critical "dsr-aur: broken packages" "$problems"
+if [[ -n $BUILDER_SSH ]]; then
+  if ssh -o BatchMode=yes -o ConnectTimeout=10 "$BUILDER_SSH" \
+    docker exec -d -e "REBUILD=$broken" "$BUILDER_CONTAINER" dsr-build once; then
+    send normal "dsr-aur: rebuild requested" "The builder will rebuild: $broken"
+  else
+    send normal "dsr-aur: rebuild not requested" "Could not reach $BUILDER_SSH; the builder will catch up on its own schedule."
+  fi
+fi
+exit 1

@@ -1,0 +1,3 @@
+post_install() {
+  echo "Enable the check for your user: systemctl --user enable --now dsr-aur-check.path"
+}

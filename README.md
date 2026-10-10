@@ -22,6 +22,20 @@ Server = https://aur.quantforge.com.br/$arch
 
 Then `sudo pacman -Syu <package>` (never `-Sy` alone: that is a partial upgrade).
 
+Install `dsr-aur-client` too. After every pacman transaction it runs `ldd -r`
+on the installed `dsr-*` packages, notifies when one lost a library or a
+symbol (the desktop notification and, optionally, ntfy), and asks the builder
+over SSH to rebuild it right away:
+
+```bash
+sudo pacman -Syu dsr-aur-client
+systemctl --user enable --now dsr-aur-check.path
+printf 'NOTIFY_URL=https://ntfy.sh/<topic>\n' >~/.config/dsr-aur-check.conf  # optional
+```
+
+`dsr-aur-check` can also run by hand; its settings are documented at the top
+of `/usr/bin/dsr-aur-check`.
+
 ## Adding packages
 
 - **From the AUR:** add `name@<commit>` to `aur.txt` after reviewing the

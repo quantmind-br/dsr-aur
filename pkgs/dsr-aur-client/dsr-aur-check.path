@@ -1,0 +1,8 @@
+[Unit]
+Description=Check dsr-aur packages after pacman transactions
+
+[Path]
+PathChanged=/var/lib/dsr-aur-check/trigger
+
+[Install]
+WantedBy=default.target

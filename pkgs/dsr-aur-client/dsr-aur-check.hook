@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Asking dsr-aur-check to verify the dsr-aur packages...
+When = PostTransaction
+Exec = /bin/sh -c 'date +%s >/var/lib/dsr-aur-check/trigger'
