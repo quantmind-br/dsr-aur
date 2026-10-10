@@ -315,7 +315,7 @@ publish_incoming() {
 process_batch() {
   local dir=$1 id=$2 key value file base prune=no
   local -a known=() added=() failed=() rejected=()
-  local -A referenced=()
+  local -A referenced=() recorded=()
   if [[ ! -f $dir/manifest || -L $dir/manifest ]]; then
     warn "Batch $id has no manifest; discarding it"
     return 3
@@ -333,6 +333,9 @@ process_batch() {
   while read -r _ _ file; do
     if [[ -n $file ]]; then referenced[$file]=1; fi
   done < <(db_versions || true)
+  while read -r file value; do
+    if [[ -n $file ]]; then recorded[$file]=$value; fi
+  done < <(db_checksums)
   for file in "$dir"/packages/*; do
     [[ -e $file ]] || continue
     if ! base=$(package_file_is_valid "$file"); then
@@ -355,6 +358,12 @@ process_batch() {
       fi
       [[ -n ${referenced[$base]:-} ]] && continue
     else
+      # Restoring a file the database still lists: only the bytes it records will do.
+      if [[ -n ${recorded[$base]:-} && $(sha256sum "$file" | cut -d ' ' -f 1) != "${recorded[$base]}" ]]; then
+        warn "$base differs from the published build it would restore; bump pkgrel to ship a rebuild"
+        rejected+=("$base")
+        continue
+      fi
       stage_package "$file" "$base" || { warn "Could not stage $base"; return 1; }
     fi
     added+=("$REPO_DIR/$base")
