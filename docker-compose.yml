@@ -1,0 +1,29 @@
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: builder/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      REPO_NAME: dsr-aur
+      BUILD_INTERVAL: ${BUILD_INTERVAL:-6h}
+      PACKAGER: ${PACKAGER:-quantmind-br <dsrodrigues20@gmail.com>}
+    cpus: ${BUILDER_CPUS:-1.5}
+    mem_limit: ${BUILDER_MEMORY:-6g}
+    volumes:
+      - repo:/srv/repo
+      - signing:/var/lib/dsr-aur
+      - cache:/var/cache/dsr-aur
+
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    command: caddy file-server --root /srv/repo --listen :80 --browse
+    volumes:
+      - repo:/srv/repo:ro
+
+volumes:
+  repo:
+  signing:
+  cache:
