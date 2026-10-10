@@ -29,6 +29,9 @@ DEP_RE='^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*((<|>|<=|>=|=)[A-Za-z0-9._+:~-]+)?$'
 SOURCES=()
 FAILED=()
 PRUNE=1
+PHASE=start
+STARTED=
+BATCH_WRITTEN=0
 declare -A SOURCE_PATH=() IS_LOCAL=() PUBLISHED=() PUBLISHED_FILE=() UPSTREAM=()
 
 BUILD_USER= # set per package by build_package
@@ -497,14 +500,14 @@ trim_caches() {
 
 # Hand the packages and the cycle's outcome to the publisher. The rename makes it atomic.
 write_batch() {
-  local started=$1 id file name
+  local id file name
   id=$(date -u +%Y%m%dT%H%M%SZ)-$$
   install -d "$INCOMING_DIR/.$id/packages"
   for file in "$PRIVATE_DIR"/out/*.pkg.tar.*; do
     if [[ -e $file ]]; then cp -- "$file" "$INCOMING_DIR/.$id/packages/"; fi
   done
   {
-    echo "started $started"
+    echo "started $STARTED"
     echo "finished $(date -u +%FT%TZ)"
     echo "prune $( (( PRUNE )) && echo yes || echo no)"
     for name in "${SOURCES[@]}"; do
@@ -516,23 +519,42 @@ write_batch() {
     done
   } >"$INCOMING_DIR/.$id/manifest"
   mv "$INCOMING_DIR/.$id" "$INCOMING_DIR/$id"
+  BATCH_WRITTEN=1
   log "Handed batch $id to the publisher"
 }
 
+# A cycle that dies before handing over its batch still hands over the failure, so the
+# publisher alerts (the heartbeat alone would look healthy while every cycle fails).
+report_abort() {
+  local status=$?
+  (( BATCH_WRITTEN )) && return
+  warn "Cycle aborted during $PHASE"
+  FAILED+=("cycle-aborted-in-$PHASE")
+  PRUNE=0
+  write_batch || true
+  exit "$status"
+}
+
 build_once() {
-  local started name
-  started=$(date -u +%FT%TZ)
+  local name
+  STARTED=$(date -u +%FT%TZ)
   check_tools
   exec 9>/run/dsr-build.lock
   flock 9
+  trap report_abort EXIT
 
+  PHASE=prepare
   prepare
   heartbeat
+  PHASE=system-update
   setup_system
+  PHASE=database
   load_published || exit 1
   load_versions
+  PHASE=sources
   collect_sources || exit 1
   register_repos
+  PHASE=build
   if enough_disk; then
     build_all
   else
@@ -543,8 +565,9 @@ build_once() {
   for name in "${SOURCES[@]}"; do
     [[ -f $PRIVATE_DIR/known/$name ]] || PRUNE=0
   done
+  PHASE=handover
   trim_caches
-  write_batch "$started"
+  write_batch
   heartbeat
   stop_all_build_users
   rm -rf "$WORK_DIR"
