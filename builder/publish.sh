@@ -92,7 +92,7 @@ setup_signing() {
 # Configs come from the image (git), never from the builder. A failed check keeps the
 # previous answer, and dsr-build never builds below the published version anyway.
 check_versions() {
-  local stamp=$STATE_DIR/versions-checked config output name version
+  local stamp=$STATE_DIR/versions-checked config raw output errors name version
   local -a configs=() keys=()
   local -A versions=()
   if [[ -f $stamp && -z $(find "$stamp" -mmin +"$VERSION_CHECK_MINUTES") ]]; then
@@ -109,8 +109,18 @@ check_versions() {
     keys=(-k "$NVCHECKER_KEYFILE")
   fi
   cat "${configs[@]}" >"$STATE_DIR/nvchecker.toml"
-  output=$(nvchecker --logger json -c "$STATE_DIR/nvchecker.toml" "${keys[@]}" 2>/dev/null |
-    jq -r 'select(.name != null and .version != null) | "\(.name) \(.version)"') || true
+  raw=$(nvchecker --logger json -c "$STATE_DIR/nvchecker.toml" "${keys[@]}" 2>&1) || true
+  output=$(jq -rR 'fromjson? | select(.name != null and .version != null) | "\(.name) \(.version)"' <<<"$raw")
+  errors=$(jq -rR 'fromjson? | select(.name != null and .error != null) | .name' <<<"$raw" | sort -u | paste -sd ' ' -)
+  if [[ -z $output && -z $errors ]]; then errors="all (nvchecker returned no versions)"; fi
+  # Failed entries keep their previous version, so nothing is downgraded; say so instead of
+  # silently freezing updates.
+  if [[ -n $errors ]]; then
+    warn "Upstream version check failed for: $errors"
+    alert version-check "dsr-aur: version checks failing" "nvchecker failed for: $errors. Their versions are frozen until it recovers."
+  else
+    resolve version-check "dsr-aur: version checks recovered" "Every upstream version check succeeded."
+  fi
 
   if [[ -f $VERSIONS_FILE ]]; then
     while read -r name version || [[ -n $name ]]; do
