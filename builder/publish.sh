@@ -20,6 +20,7 @@ DELETE_GRACE_HOURS=${DELETE_GRACE_HOURS:-24}
 ALLOW_EMPTY_PRUNE=${ALLOW_EMPTY_PRUNE:-0}
 NOTIFY_URL=${NOTIFY_URL:-}
 STALE_HOURS=${STALE_HOURS:-12}
+MIN_FREE_GB=${MIN_FREE_GB:-5}
 
 FILES_DB=$REPO_DIR/$REPO_NAME.files.tar.gz
 SIGN_GNUPGHOME=$STATE_DIR/gnupg
@@ -432,7 +433,7 @@ cleanup_unreferenced() {
 }
 
 publish_once() {
-  local failed
+  local failed free
   trap '' TERM INT # finish the cycle; the loop waits for it
   check_tools
   install -d "$STATE_DIR" "$REPO_DIR" "$CONTROL_DIR"
@@ -442,10 +443,16 @@ publish_once() {
   setup_signing
   check_versions || warn "Upstream version check failed"
   failed=0
-  if db_lost; then
+  free=$(df --output=avail -BG "$REPO_DIR" | tail -n 1 | tr -dc '0-9')
+  if (( free < MIN_FREE_GB )); then
+    warn "Only ${free}G free for the repository; holding every batch"
+    alert disk "dsr-aur: repository disk full" "Only ${free}G free on the repository volume (MIN_FREE_GB=$MIN_FREE_GB). Publishing is on hold."
+  elif db_lost; then
+    resolve disk "dsr-aur: repository disk ok" "There is room on the repository volume again."
     warn "The database is missing; holding every batch until it is restored"
     alert database "dsr-aur: database missing" "$DB is missing although the repository was initialized. Publishing, pruning and deletions are on hold until it is restored."
   else
+    resolve disk "dsr-aur: repository disk ok" "There is room on the repository volume again."
     resolve database "dsr-aur: database back" "The repository database is present again."
     publish_incoming || failed=1
   fi

@@ -114,8 +114,8 @@ prepare() {
 
 setup_system() {
   log "Updating build system"
-  pacman -Sy --noconfirm --needed archlinux-keyring
-  pacman -Su --noconfirm
+  timeout "$STEP_TIMEOUT" pacman -Sy --noconfirm --needed archlinux-keyring
+  timeout "$STEP_TIMEOUT" pacman -Su --noconfirm
 }
 
 # Expose the published repository and this cycle's packages, so packages can depend on each other.
@@ -296,14 +296,14 @@ install_deps() {
     [[ $dep =~ $DEP_RE ]] || { warn "Invalid dependency '$dep'"; return 1; }
   done
   (( ${#deps[@]} )) || return 0
-  pacman -Syu --noconfirm --needed --asdeps -- "${deps[@]}"
+  timeout "$STEP_TIMEOUT" pacman -Syu --noconfirm --needed --asdeps -- "${deps[@]}"
 }
 
 remove_new_deps() {
   local -a extra
   mapfile -t extra < <(comm -13 "$PRIVATE_DIR/deps-before" <(pacman -Qq | sort))
   (( ${#extra[@]} )) || return 0
-  pacman -Rns --noconfirm "${extra[@]}" >/dev/null || warn "Could not remove build dependencies"
+  timeout "$STEP_TIMEOUT" pacman -Rns --noconfirm "${extra[@]}" >/dev/null || warn "Could not remove build dependencies"
 }
 
 urldecode() { printf '%b' "${1//%/\\x}"; }

@@ -73,8 +73,9 @@ through the `control` volume, which the builder mounts read-only.
 
 Builder safeguards:
 
-- Each package builds as its own unprivileged user (`dsrb<uid>`, UID derived
-  from the package name), without sudo. Its sources, download cache, ccache
+- Each package builds as its own unprivileged user (`dsrb<uid>`, UID
+  allocated once per package and kept in a root-only map on the cache
+  volume), without sudo. Its sources, download cache, ccache
   and home are private (`700`), so one PKGBUILD cannot alter another package.
   Root installs build dependencies, after checking that every `.SRCINFO`
   entry looks like a dependency, and passes them after `--`.
@@ -150,8 +151,8 @@ Settings (Dokploy environment):
 |---|---|---|
 | `BUILD_INTERVAL` | `6h` | Time between build cycles (`sleep` syntax) |
 | `BUILD_TIMEOUT` | `8h` | Limit for a single makepkg run |
-| `STEP_TIMEOUT` | `1h` | Limit for every other step run as a build user (`--printsrcinfo`, `updpkgsums`, source download) |
-| `MIN_FREE_GB` | `5` | Skip packages while the cache or work disk has less free space |
+| `STEP_TIMEOUT` | `1h` | Limit for every other build step (`--printsrcinfo`, `updpkgsums`, source download, pacman) |
+| `MIN_FREE_GB` | `5` | Builder: skip packages while the cache or work disk has less free space. Publisher: hold batches while the repository volume has less |
 | `HOME_CACHE_MAX_GB` | `5` | Drop a package's tool caches (npm, cargo, go) beyond this size |
 | `BUILDER_CPUS` | `1.5` | CPU limit for the builder |
 | `BUILDER_MEMORY` | `6g` | Memory limit for the builder |

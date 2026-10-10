@@ -15,6 +15,9 @@ services:
       REPO_NAME: dsr-aur
       BUILD_INTERVAL: ${BUILD_INTERVAL:-6h}
       BUILD_TIMEOUT: ${BUILD_TIMEOUT:-8h}
+      STEP_TIMEOUT: ${STEP_TIMEOUT:-1h}
+      MIN_FREE_GB: ${MIN_FREE_GB:-5}
+      HOME_CACHE_MAX_GB: ${HOME_CACHE_MAX_GB:-5}
       PACKAGER: ${PACKAGER:-quantmind-br <dsrodrigues20@gmail.com>}
       ALLOW_UNPINNED_AUR: ${ALLOW_UNPINNED_AUR:-0}
     cpus: ${BUILDER_CPUS:-1.5}
@@ -43,6 +46,7 @@ services:
       DELETE_GRACE_HOURS: ${DELETE_GRACE_HOURS:-24}
       NOTIFY_URL: ${NOTIFY_URL:-}
       STALE_HOURS: ${STALE_HOURS:-12}
+      MIN_FREE_GB: ${MIN_FREE_GB:-5}
     volumes:
       - repo:/srv/repo
       - exchange:/srv/exchange
