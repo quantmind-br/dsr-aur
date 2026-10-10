@@ -175,6 +175,36 @@ update_version() {
     as_builder updpkgsums >/dev/null
 }
 
+# Compare downloaded GitHub release assets with the sha256 digest GitHub publishes for them.
+# updpkgsums trusts whatever it downloads; this ties the checksum to the release itself.
+verify_release_digests() {
+  local field entry url file repo tag asset expected actual
+  local -a auth=()
+  if [[ -f $NVCHECKER_KEYFILE ]]; then
+    auth=(-H "Authorization: Bearer $(sed -n 's/^github = "\(.*\)"$/\1/p' "$NVCHECKER_KEYFILE")")
+  fi
+  while read -r entry; do
+    url=${entry#*::}
+    file=${url##*/}
+    [[ $entry == *::* ]] && file=${entry%%::*}
+    [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/?#]+)$ ]] || continue
+    repo=${BASH_REMATCH[1]} tag=${BASH_REMATCH[2]} asset=${BASH_REMATCH[3]}
+    if ! expected=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/$repo/releases/tags/$tag" |
+      jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .digest // empty'); then
+      warn "Could not fetch the GitHub digest of $asset; skipping the check"
+      continue
+    fi
+    [[ $expected == sha256:* ]] || continue
+    actual=$(sha256sum "$SRCDEST/$file" | cut -d ' ' -f 1) || return 1
+    if [[ ${expected#sha256:} != "$actual" ]]; then
+      warn "$file does not match the sha256 GitHub publishes for $repo $tag/$asset"
+      rm -f "$SRCDEST/$file" # a corrupt download heals on the next cycle; a swapped asset keeps failing
+      return 1
+    fi
+    log "$file matches the GitHub release digest"
+  done < <(for field in source "source_$ARCH"; do srcinfo_global "$field" "$1"; done)
+}
+
 remove_new_deps() {
   local -a extra
   mapfile -t extra < <(comm -13 "$1" <(pacman -Qq | sort))
@@ -229,7 +259,10 @@ build_package() {
   fi
 
   log "Building $name"
-  if ! as_builder makepkg --noconfirm --cleanbuild --clean --force || ! publish; then
+  if ! as_builder makepkg --verifysource --noconfirm >/dev/null ||
+    ! verify_release_digests "$srcinfo" ||
+    ! as_builder makepkg --noconfirm --cleanbuild --clean --force ||
+    ! publish; then
     remove_new_deps "$deps_before"
     return 1
   fi

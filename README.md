@@ -45,6 +45,10 @@ Then `sudo pacman -Sy <package>`.
 
   VCS packages (`pkgver()`) update without it.
 
+  Before building, every GitHub release asset in `source=` is compared with
+  the sha256 digest the GitHub API publishes for it; a mismatch fails the
+  package and drops the cached file.
+
 Push to `main`. Dokploy redeploys the stack, and the builder builds on startup.
 
 ## How it works
