@@ -100,9 +100,10 @@ own_dir() {
 prepare() {
   stop_all_build_users
   rm -rf "$WORK_DIR" "$PRIVATE_DIR"
-  install -d -m 700 "$PRIVATE_DIR" "$PRIVATE_DIR/stage" "$PRIVATE_DIR/out" "$PRIVATE_DIR/known" "$PRIVATE_DIR/abi"
+  install -d -m 700 "$PRIVATE_DIR" "$PRIVATE_DIR/stage" "$PRIVATE_DIR/out" "$PRIVATE_DIR/known" "$PRIVATE_DIR/abi" \
+    "$PRIVATE_DIR/abi-unfixed"
   install -d -o root -g root -m 755 "$WORK_DIR" "$WORK_DIR/sources" "$WORK_DIR/out" \
-    "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache" "$CACHE_DIR/home"
+    "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache" "$CACHE_DIR/home" "$CACHE_DIR/abi-rebuilt"
   install -d "$INCOMING_DIR"
   # Batches a killed cycle never finished handing over.
   find "$INCOMING_DIR" -mindepth 1 -maxdepth 1 -name '.*' -mmin +1440 -exec rm -rf {} +
@@ -362,6 +363,13 @@ apply_abi_rebuild() {
     printf '%s\n' "$srcinfo"
     return 0
   fi
+  # A rebuild that did not cure the same break would repeat every cycle: report it instead.
+  if [[ -f $CACHE_DIR/abi-rebuilt/$name && $(<"$CACHE_DIR/abi-rebuilt/$name") == "$published $deps" ]]; then
+    warn "$name was already rebuilt for $deps and is still broken; not rebuilding it again"
+    printf '%s\n' "$deps" >"$PRIVATE_DIR/abi-unfixed/$name"
+    printf '%s\n' "$srcinfo"
+    return 0
+  fi
   rel=${published##*-}
   target=$(srcinfo_global pkgrel "$srcinfo")
   if (( $(vercmp "$rel" "$target") > 0 )); then target=$rel; fi
@@ -370,10 +378,12 @@ apply_abi_rebuild() {
   else
     target=$target.1
   fi
-  log "Rebuilding $name with pkgrel $target: $deps is no longer provided"
+  log "Rebuilding $name with pkgrel $target ($deps)"
   as_builder sed -i "s/^pkgrel=.*/pkgrel=$target/" PKGBUILD || return 1
   printf '%s\n' "$deps" >"$PRIVATE_DIR/abi/$name"
-  as_builder makepkg --printsrcinfo
+  srcinfo=$(as_builder makepkg --printsrcinfo) || return 1
+  printf '%s %s\n' "$(full_version "$srcinfo")" "$deps" >"$CACHE_DIR/abi-rebuilt/$name"
+  printf '%s\n' "$srcinfo"
 }
 
 import_keys() {
@@ -649,6 +659,9 @@ write_batch() {
     done
     for file in "$PRIVATE_DIR"/abi/*; do
       if [[ -f $file ]]; then echo "abi ${file##*/} $(<"$file")"; fi
+    done
+    for file in "$PRIVATE_DIR"/abi-unfixed/*; do
+      if [[ -f $file ]]; then echo "failed ${file##*/}-still-broken-after-rebuild"; fi
     done
   } >"$INCOMING_DIR/.$id/manifest"
   mv "$INCOMING_DIR/.$id" "$INCOMING_DIR/$id"
