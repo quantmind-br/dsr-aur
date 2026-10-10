@@ -21,6 +21,7 @@ KEYSERVER=${KEYSERVER:-hkps://keyserver.ubuntu.com}
 MIN_FREE_GB=${MIN_FREE_GB:-5}
 STEP_TIMEOUT=${STEP_TIMEOUT:-1h}
 HOME_CACHE_MAX_GB=${HOME_CACHE_MAX_GB:-5}
+ABI_CHECK_HOURS=${ABI_CHECK_HOURS:-24}
 FORCE=${FORCE:-0}
 export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-1G}
 
@@ -34,7 +35,7 @@ PRUNE=1
 PHASE=start
 STARTED=
 BATCH_WRITTEN=0
-declare -A SOURCE_PATH=() IS_LOCAL=() PUBLISHED=() PUBLISHED_FILE=() UPSTREAM=()
+declare -A SOURCE_PATH=() IS_LOCAL=() PUBLISHED=() PUBLISHED_FILE=() UPSTREAM=() ABI_BROKEN=()
 
 BUILD_USER= # set per package by build_package
 
@@ -99,7 +100,7 @@ own_dir() {
 prepare() {
   stop_all_build_users
   rm -rf "$WORK_DIR" "$PRIVATE_DIR"
-  install -d -m 700 "$PRIVATE_DIR" "$PRIVATE_DIR/stage" "$PRIVATE_DIR/out" "$PRIVATE_DIR/known"
+  install -d -m 700 "$PRIVATE_DIR" "$PRIVATE_DIR/stage" "$PRIVATE_DIR/out" "$PRIVATE_DIR/known" "$PRIVATE_DIR/abi"
   install -d -o root -g root -m 755 "$WORK_DIR" "$WORK_DIR/sources" "$WORK_DIR/out" \
     "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache" "$CACHE_DIR/home"
   install -d "$INCOMING_DIR"
@@ -142,6 +143,85 @@ load_published() {
       PUBLISHED_FILE[$name]=$file
     fi
   done <<<"$listing"
+}
+
+# Published packages the current repositories can no longer satisfy. makepkg records the
+# library sonames a package links against (depends = libicuuc.so=78-64); when Arch moves a
+# library to a new soname, pacman cannot resolve that dependency any more, which is exactly
+# when the package must be rebuilt. A library built here is seen once it is published.
+find_abi_broken() {
+  local name out deps
+  grep -q "^\[$REPO_NAME\]" /etc/pacman.conf || return 0
+  timeout "$STEP_TIMEOUT" pacman -Sy >/dev/null || return 0
+  for name in "${!PUBLISHED[@]}"; do
+    [[ $name == *-debug ]] && continue
+    out=$(timeout "$STEP_TIMEOUT" pacman -Sp --noconfirm -- "$REPO_NAME/$name" 2>&1) && continue
+    deps=$(sed -n "s/^:: unable to satisfy dependency '\([^']*\)' required by .*/\1/p" <<<"$out" | paste -sd ' ' -)
+    if [[ -n $deps ]]; then
+      ABI_BROKEN[$name]=$deps
+      log "$name needs a rebuild: nothing provides $deps any more"
+    fi
+  done
+}
+
+# Sonames the ELF files of package $1 need from outside the package. The package came from a
+# build, so it is unpacked and parsed as nobody.
+list_needed() {
+  local tmp status=0
+  tmp=$(mktemp -d) || return 1
+  chown nobody:nobody "$tmp" || { rm -rf "$tmp"; return 1; }
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  runuser -u nobody -- bash -c '
+    set -o pipefail
+    mkdir "$1/root" && bsdtar -xf "$2" -C "$1/root" 2>/dev/null
+    find "$1/root" -type f -print0 | xargs -0 -r readelf -d 2>/dev/null |
+      sed -nr "s/.*Shared library: \[(.*)\].*/\1/p" | sort -u >"$1/needed"
+    find "$1/root" -printf "%f\n" | sort -u >"$1/names"
+    grep -vxF -f "$1/names" "$1/needed" || true
+  ' _ "$tmp" "$1" || status=$?
+  rm -rf "$tmp"
+  return "$status"
+}
+
+# Published packages linking a soname that no repository ships any more. Most Arch packages
+# do not declare lib: provides yet, so the pacman -Sp check misses their ABI breaks; this asks
+# the files databases instead. It runs every ABI_CHECK_HOURS (the files databases are large),
+# and the needed sonames of each published file are cached, since published files never change.
+find_missing_sonames() {
+  local stamp=$CACHE_DIR/abi-checked name file needed soname
+  local -A wanted=() present=()
+  if [[ -f $stamp && -z $(find "$stamp" -mmin +$((ABI_CHECK_HOURS * 60))) ]]; then return 0; fi
+  timeout "$STEP_TIMEOUT" pacman -Fy >/dev/null || return 0
+  install -d -m 755 "$CACHE_DIR/needed"
+  for name in "${!PUBLISHED[@]}"; do
+    file=${PUBLISHED_FILE[$name]}
+    [[ -f $REPO_DIR/$file ]] || continue
+    needed=$CACHE_DIR/needed/$file
+    if [[ ! -f $needed ]] && ! list_needed "$REPO_DIR/$file" >"$needed"; then
+      rm -f "$needed"
+      continue
+    fi
+    while read -r soname; do
+      if [[ -n $soname ]]; then wanted[$soname]+=" $name"; fi
+    done <"$needed"
+  done
+  if (( ${#wanted[@]} )); then
+    while IFS= read -r file; do
+      present[${file##*/}]=1
+    done < <(timeout "$STEP_TIMEOUT" pacman -F --machinereadable -- "${!wanted[@]}" 2>/dev/null | tr '\0' '\t' | cut -f 4)
+    for soname in "${!wanted[@]}"; do
+      [[ -n ${present[$soname]:-} ]] && continue
+      for name in ${wanted[$soname]}; do
+        ABI_BROKEN[$name]+="${ABI_BROKEN[$name]:+ }$soname"
+        log "$name needs a rebuild: no repository ships $soname any more"
+      done
+    done
+  fi
+  # Cached lists of files no longer published are dropped.
+  for needed in "$CACHE_DIR"/needed/*; do
+    [[ -e ${needed/#$CACHE_DIR\/needed/$REPO_DIR} ]] || rm -f "$needed"
+  done
+  touch "$stamp"
 }
 
 # Latest upstream versions resolved by dsr-publish (which holds the GitHub token).
@@ -265,6 +345,35 @@ apply_version() {
   [[ $target == "$current" ]] && return 0
   log "Updating $name from $current to $target"
   as_builder sed -i "s/^pkgver=.*/pkgver=$target/" PKGBUILD && as_builder updpkgsums >/dev/null
+}
+
+# When the published version of this source lost a library it links against, rebuild it with a
+# pkgrel just above the published one (1 -> 1.1 -> 1.2): pacman sees an upgrade, the file name
+# is new, and a later pkgrel bump in git (2) still wins. Prints the updated .SRCINFO.
+apply_abi_rebuild() {
+  local name=$1 srcinfo=$2 pkg deps='' published='' rel target
+  while read -r pkg; do
+    if [[ -n ${ABI_BROKEN[$pkg]:-} ]]; then
+      deps+="${deps:+ }${ABI_BROKEN[$pkg]}"
+      published=${PUBLISHED[$pkg]}
+    fi
+  done < <(srcinfo_pkgnames "$srcinfo")
+  if [[ -z $deps ]] || ! is_published "$srcinfo"; then
+    printf '%s\n' "$srcinfo"
+    return 0
+  fi
+  rel=${published##*-}
+  target=$(srcinfo_global pkgrel "$srcinfo")
+  if (( $(vercmp "$rel" "$target") > 0 )); then target=$rel; fi
+  if [[ $target =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+    target=${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1))
+  else
+    target=$target.1
+  fi
+  log "Rebuilding $name with pkgrel $target: $deps is no longer provided"
+  as_builder sed -i "s/^pkgrel=.*/pkgrel=$target/" PKGBUILD || return 1
+  printf '%s\n' "$deps" >"$PRIVATE_DIR/abi/$name"
+  as_builder makepkg --printsrcinfo
 }
 
 import_keys() {
@@ -421,6 +530,9 @@ build_package() {
     apply_version "$name" || return 1
   fi
   srcinfo=$(as_builder makepkg --printsrcinfo) || return 1
+  if ! is_vcs; then
+    srcinfo=$(apply_abi_rebuild "$name" "$srcinfo") || return 1
+  fi
   record_known "$name" "$srcinfo" || return 1
   if ! is_vcs && is_published "$srcinfo"; then
     log "$name is up to date"
@@ -437,7 +549,8 @@ build_package() {
 
   # VCS packages only know their real version after pkgver() runs.
   if is_vcs; then
-    if ! as_builder makepkg --nobuild --noconfirm >/dev/null || ! srcinfo=$(as_builder makepkg --printsrcinfo); then
+    if ! as_builder makepkg --nobuild --noconfirm >/dev/null || ! srcinfo=$(as_builder makepkg --printsrcinfo) ||
+      ! srcinfo=$(apply_abi_rebuild "$name" "$srcinfo"); then
       stop_build_user
       remove_new_deps
       return 1
@@ -534,6 +647,9 @@ write_batch() {
     for file in "$PRIVATE_DIR"/out/*.pkg.tar.*; do
       if [[ -e $file ]]; then echo "built ${file##*/}"; fi
     done
+    for file in "$PRIVATE_DIR"/abi/*; do
+      if [[ -f $file ]]; then echo "abi ${file##*/} $(<"$file")"; fi
+    done
   } >"$INCOMING_DIR/.$id/manifest"
   mv "$INCOMING_DIR/.$id" "$INCOMING_DIR/$id"
   BATCH_WRITTEN=1
@@ -573,6 +689,8 @@ build_once() {
   PHASE=sources
   collect_sources || exit 1
   register_repos
+  find_abi_broken
+  find_missing_sonames
   PHASE=build
   build_all
   # Without srcinfo for every source the publisher cannot tell what to keep.

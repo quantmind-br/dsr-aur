@@ -30,6 +30,7 @@ SIGN_KEY=
 PROCESSED=0     # a batch was consumed in this run
 RUN_FAILED=()   # failures across every batch published in this run
 RUN_REJECTED=()
+RUN_ABI=()      # "package sonames" rebuilt because a library they link against moved
 
 gpg_sign() { GNUPGHOME=$SIGN_GNUPGHOME gpg --batch --pinentry-mode loopback "$@"; }
 
@@ -328,6 +329,7 @@ process_batch() {
       prune) if [[ $value == yes ]]; then prune=yes; fi ;;
       known) if [[ $value =~ $NAME_RE ]]; then known+=("$value"); fi ;;
       failed) failed+=("$value") ;;
+      abi) RUN_ABI+=("$value") ;;
       started | finished | built) ;;
       *) warn "Batch $id: unknown manifest entry '$key'" ;;
     esac
@@ -465,6 +467,12 @@ publish_once() {
       "Failed: ${RUN_FAILED[*]:-none}"$'\n'"Rejected: ${RUN_REJECTED[*]:-none}"$'\n'"https://aur.quantforge.com.br/status.json"
   elif (( PROCESSED )); then
     resolve build-failures "dsr-aur: builds recovered" "Every package built in the last cycle."
+  fi
+  # One-shot notice, delivered (and retried) by flush_alerts like a recovery.
+  if [[ -n $NOTIFY_URL ]] && (( ${#RUN_ABI[@]} )); then
+    install -d "$STATE_DIR/alerts"
+    { echo "dsr-aur: rebuilt for library changes"; printf '%s\n' "${RUN_ABI[@]}"; } \
+      >"$STATE_DIR/alerts/abi-$(date +%s).clear"
   fi
   # repo-add only warns when signing fails, and a failed check must not wait for the next
   # package to be retried.

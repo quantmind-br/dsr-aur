@@ -87,6 +87,14 @@ Builder safeguards:
 - GitHub release assets in `source=` must match the sha256 digest the GitHub
   API publishes. A mismatch, or an API failure, fails the package for this
   cycle. Assets older than GitHub's digests rely on the PKGBUILD checksums.
+- A package whose library dependencies broke is rebuilt with a pkgrel just
+  above the published one (`1` → `1.1` → `1.2`; a later `pkgrel=2` in git
+  still wins). Breaks are found two ways: every cycle, `pacman -Sp` reports
+  `lib:` dependencies (recorded by makepkg's autodeps) that nothing provides
+  any more; every `ABI_CHECK_HOURS`, the sonames each published package needs
+  (read with `readelf`) are looked up in the repositories' files databases,
+  which covers libraries whose packages do not declare `lib:` yet. A
+  notification lists what was rebuilt.
 - A cycle aborts when core tools crash (QEMU) or the disk has less than
   `MIN_FREE_GB` free.
 
@@ -129,8 +137,8 @@ Limits:
   and the container lives across cycles. The key and the token are out of
   its reach, but it could still tamper with later builds. Review pinned
   commits and require lockfiles.
-- A soname bump in Arch does not trigger rebuilds: bump `pkgrel` of the
-  affected packages.
+- Libraries loaded with `dlopen` (plugins) are not tracked, and a rebuild
+  can lag one build interval behind an Arch library update.
 
 ## Operations
 
@@ -153,6 +161,7 @@ Settings (Dokploy environment):
 | `BUILD_TIMEOUT` | `8h` | Limit for a single makepkg run |
 | `STEP_TIMEOUT` | `1h` | Limit for every other build step (`--printsrcinfo`, `updpkgsums`, source download, pacman) |
 | `MIN_FREE_GB` | `5` | Builder: skip packages while the cache or work disk has less free space. Publisher: hold batches while the repository volume has less |
+| `ABI_CHECK_HOURS` | `24` | How often published packages are checked against the files databases for sonames no repository ships |
 | `HOME_CACHE_MAX_GB` | `5` | Drop a package's tool caches (npm, cargo, go) beyond this size |
 | `BUILDER_CPUS` | `1.5` | CPU limit for the builder |
 | `BUILDER_MEMORY` | `6g` | Memory limit for the builder |

@@ -18,6 +18,7 @@ services:
       STEP_TIMEOUT: ${STEP_TIMEOUT:-1h}
       MIN_FREE_GB: ${MIN_FREE_GB:-5}
       HOME_CACHE_MAX_GB: ${HOME_CACHE_MAX_GB:-5}
+      ABI_CHECK_HOURS: ${ABI_CHECK_HOURS:-24}
       PACKAGER: ${PACKAGER:-quantmind-br <dsrodrigues20@gmail.com>}
       ALLOW_UNPINNED_AUR: ${ALLOW_UNPINNED_AUR:-0}
     cpus: ${BUILDER_CPUS:-1.5}
