@@ -1,0 +1,137 @@
+# Builds the packages natively on x86_64 and hands the batch to the publisher on the VPS,
+# which downloads it from the "batches" release, validates it, signs and publishes it.
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths: ['pkgs/**', 'aur.txt', 'builder/**', '.github/workflows/build.yml']
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Published packages to rebuild with a higher pkgrel (space-separated)
+        default: ''
+      force:
+        description: Rebuild every package (the publisher still refuses existing file names)
+        type: boolean
+        default: false
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+env:
+  REPO_URL: https://aur.quantforge.com.br
+  SIGN_KEY_FPR: 527847CE99A97C4EEB1CA5394250FF48D2374AED
+  PACKAGER: quantmind-br <dsrodrigues20@gmail.com>
+
+jobs:
+  # Runs PKGBUILDs and upstream build systems: read-only token, no secrets.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    permissions:
+      contents: read
+    outputs:
+      batch: ${{ steps.pack.outputs.batch }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore build caches
+        uses: actions/cache/restore@v6
+        with:
+          path: work/cache
+          key: dsr-cache-${{ github.run_id }}
+          restore-keys: dsr-cache-
+
+      - name: Build the builder image
+        run: |
+          mkdir -p work/repo work/exchange work/control work/cache
+          docker build -q -f builder/Dockerfile -t dsr-aur-builder .
+
+      - name: Resolve upstream versions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          docker run --rm -e GITHUB_TOKEN -v "$PWD/work/control:/srv/control" dsr-aur-builder dsr-publish versions ||
+            echo "::warning::Some upstream versions could not be resolved; those packages keep their published version"
+
+      - name: Build
+        id: build
+        env:
+          REBUILD: ${{ inputs.rebuild }}
+          FORCE: ${{ inputs.force && '1' || '0' }}
+        run: |
+          status=0
+          docker run --rm --init -e REPO_URL -e SIGN_KEY_FPR -e PACKAGER -e REBUILD -e FORCE \
+            -v "$PWD/work/repo:/srv/repo" -v "$PWD/work/exchange:/srv/exchange" \
+            -v "$PWD/work/control:/srv/control:ro" -v "$PWD/work/cache:/var/cache/dsr-aur" \
+            dsr-aur-builder dsr-build once || status=$?
+          echo "status=$status" >>"$GITHUB_OUTPUT"
+
+      - name: Pack the batch
+        id: pack
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" work
+          id=''
+          for dir in work/exchange/incoming/*/; do
+            name=$(basename "$dir")
+            if [[ $name =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]]; then id=$name; fi
+          done
+          if [[ -n $id ]]; then
+            tar -C work/exchange/incoming -czf "$id.tar.gz" "$id"
+            echo "batch=$id" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: steps.pack.outputs.batch != ''
+        with:
+          name: batch
+          path: ${{ steps.pack.outputs.batch }}.tar.gz
+          retention-days: 1
+
+      - name: Save build caches
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: work/cache
+          key: dsr-cache-${{ github.run_id }}
+
+      - name: Fail when packages failed
+        if: steps.build.outputs.status != '0'
+        run: |
+          echo "::error::Some packages failed; the batch lists them and the publisher alerts"
+          exit 1
+
+  # Runs no build code: attaches the batch to the public "batches" release.
+  publish:
+    needs: build
+    if: ${{ !cancelled() && needs.build.outputs.batch != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BATCH: ${{ needs.build.outputs.batch }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: batch
+
+      - name: Attach the batch to the batches release
+        run: |
+          [[ $BATCH =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]]
+          gh release view batches >/dev/null 2>&1 ||
+            gh release create batches --prerelease --latest=false --title "Build batches" \
+              --notes "Build batches for the dsr-aur publisher. Not meant for direct use."
+          gh release upload batches "$BATCH.tar.gz" --clobber
+
+      - name: Drop batches older than a week
+        run: |
+          cutoff=$(date -u -d '-7 days' +%Y%m%dT%H%M%SZ)
+          gh release view batches --json assets --jq '.assets[].name' | while read -r name; do
+            if [[ ${name%%-*} < $cutoff ]]; then gh release delete-asset batches "$name" -y; fi
+          done

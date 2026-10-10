@@ -1,6 +1,8 @@
 services:
-  # Runs PKGBUILDs and upstream build systems; holds no signing key and no token.
+  # Emulated fallback builder: GitHub Actions builds natively (.github/workflows/build.yml).
+  # Start it with COMPOSE_PROFILES=vps-builder. Holds no signing key and no token.
   builder:
+    profiles: ["vps-builder"]
     # Arch Linux images are x86_64 only; ARM hosts run them through qemu-user-static.
     platform: linux/amd64
     build:
@@ -44,6 +46,7 @@ services:
       REPO_NAME: dsr-aur
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       SIGN_KEY_FPR: ${SIGN_KEY_FPR:-}
+      CI_REPO: ${CI_REPO:-quantmind-br/dsr-aur}
       DELETE_GRACE_HOURS: ${DELETE_GRACE_HOURS:-24}
       NOTIFY_URL: ${NOTIFY_URL:-}
       STALE_HOURS: ${STALE_HOURS:-12}

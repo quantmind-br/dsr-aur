@@ -63,18 +63,21 @@ Push to `main`. Dokploy redeploys the stack, and the builder builds on startup.
 
 ## How it works
 
-`docker-compose.yml` runs three services, deployed by Dokploy from this
-repository. The builder and the publisher share one image. The builder hands
-batches over through the `exchange` volume; the publisher copies each batch
-out without following symlinks before reading it. The publisher answers
-through the `control` volume, which the builder mounts read-only.
+Packages are built natively on x86_64 by GitHub Actions and published from
+the VPS, where Dokploy runs the publisher and the web server from
+`docker-compose.yml`. Both sides use the image in `builder/`.
 
-- **builder** (`dsr-build loop`): every `BUILD_INTERVAL` it updates the
-  system and, for each source, copies the PKGBUILD into a fresh directory,
-  applies the upstream version and builds it when the database does not hold
-  that version yet. It writes one batch (packages plus a manifest) per cycle.
-  It runs third-party code, so it has no signing key, no token, and only
-  read-only access to the published repository.
+- **builder** (`.github/workflows/build.yml`, `dsr-build once`): runs on
+  every push to `pkgs/`, `aur.txt` or `builder/`, every 6 hours, and on
+  demand. In a fresh VM it resolves upstream versions, downloads the
+  published database (accepted only with a signature by `SIGN_KEY_FPR`), and
+  for each source copies the PKGBUILD into a fresh directory, applies the
+  upstream version and builds it when the database does not hold that
+  version yet. A second job, which runs no build code, attaches the batch
+  (packages plus a manifest) to the public `batches` release. The build job
+  has a read-only token and no secrets.
+- **publisher** fetches new batches from that release (no token needed),
+  copying each one out without following symlinks before reading it.
 - **publisher** (`dsr-publish loop`): every minute it validates each package
   of a pending batch, signs it, publishes it, runs `repo-add
   --prevent-downgrade`, checks the database signatures, prunes packages that
@@ -84,6 +87,10 @@ through the `control` volume, which the builder mounts read-only.
   PKGBUILD code and alone holds the signing key and `GITHUB_TOKEN`.
 - **web**: Caddy serving the `repo` volume read-only. Traefik (Dokploy)
   terminates TLS for `aur.quantforge.com.br`.
+
+An emulated builder can also run on the VPS (`COMPOSE_PROFILES=vps-builder`
+in Dokploy), handing batches over through the `exchange` volume, as a
+fallback when GitHub Actions is unavailable.
 
 Builder safeguards:
 
@@ -130,9 +137,9 @@ Publisher safeguards:
 `https://aur.quantforge.com.br/status.json` shows the last cycle: what was
 built, what failed, the package count and the signing key.
 
-The VPS is ARM64, so both services run as `linux/amd64` through QEMU user-mode
-emulation. Repackaging `-bin` packages is quick; compiling is several times
-slower than native. Ubuntu 24.04's QEMU 8.2 crashes `grep` under current
+The VPS is ARM64, so the publisher (and the fallback builder) run as
+`linux/amd64` through QEMU user-mode emulation; the publisher only signs and
+indexes, so speed does not matter there. Ubuntu 24.04's QEMU 8.2 crashes `grep` under current
 glibc, so the host registers QEMU 10.2.3 at
 `/usr/local/lib/qemu-binfmt/qemu-x86_64` through
 `/etc/binfmt.d/qemu-x86_64.conf`. The static binary comes from
@@ -147,27 +154,32 @@ Limits:
 
 - AUR PKGBUILDs, and the dependencies upstream build systems download, are
   third-party code. Root installs packages from this repository as build
-  dependencies, so a malicious package can take over the builder container,
-  and the container lives across cycles. The key and the token are out of
-  its reach, but it could still tamper with later builds. Review pinned
-  commits and require lockfiles.
+  dependencies, so a malicious package can take over the build VM for the
+  rest of that run and tamper with packages built after it. Each run starts
+  from a fresh VM, and the key never leaves the VPS. Review pinned commits
+  and require lockfiles.
 - Libraries loaded with `dlopen` (plugins) are not tracked, and a rebuild
   can lag one build interval behind an Arch library update.
 
 ## Operations
 
-Build or publish now instead of waiting (on the VPS):
+Build now, follow it, or rebuild published packages with a higher pkgrel:
 
 ```bash
-docker exec compose-quantify-neural-alarm-8a391p-builder-1 dsr-build once
-docker exec compose-quantify-neural-alarm-8a391p-publisher-1 dsr-publish once
+gh workflow run build -R quantmind-br/dsr-aur
+gh run watch -R quantmind-br/dsr-aur
+gh workflow run build -R quantmind-br/dsr-aur -f rebuild="dsr-foo dsr-bar"
 ```
+
+Publish fetched batches now instead of within the minute (on the VPS):
+`docker exec compose-quantify-neural-alarm-8a391p-publisher-1 dsr-publish once`.
 
 The signing key is generated on the first run and kept in the `signing`
 volume (publisher only). An encrypted backup lives outside the VPS; see
 [Signing key](#signing-key).
 
-Settings (Dokploy environment):
+Settings (Dokploy environment). Builder settings apply to the fallback VPS
+builder; the CI builder uses the defaults, or `env:` in the workflow:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -180,6 +192,7 @@ Settings (Dokploy environment):
 | `BUILDER_CPUS` | `1.5` | CPU limit for the builder |
 | `BUILDER_MEMORY` | `6g` | Memory limit for the builder |
 | `PACKAGER` | `quantmind-br <dsrodrigues20@gmail.com>` | Packager recorded in built packages |
+| `CI_REPO` | `quantmind-br/dsr-aur` | Publisher: repository whose `batches` release holds the CI build batches |
 | `SIGN_KEY_FPR` | unset | Publisher: fingerprint of the active signing key (see [Signing key](#signing-key)) |
 | `GITHUB_TOKEN` | unset | Publisher only: token for nvchecker (lifts the 60 requests/hour limit; required by `include_prereleases` with `use_latest_release`) |
 | `DELETE_GRACE_HOURS` | `24` | How long unreferenced package files stay downloadable |
