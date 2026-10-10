@@ -3,14 +3,15 @@
 
 REPO_NAME=${REPO_NAME:-dsr-aur}
 REPO_ROOT=${REPO_ROOT:-/srv/repo}
-EXCHANGE_DIR=${EXCHANGE_DIR:-/srv/exchange}
+EXCHANGE_DIR=${EXCHANGE_DIR:-/srv/exchange} # builder -> publisher; the builder can write it
+CONTROL_DIR=${CONTROL_DIR:-/srv/control}    # publisher -> builder; read-only in the builder
 SOURCE_DIR=${SOURCE_DIR:-/src}
 
 ARCH=$(uname -m)
 REPO_DIR=$REPO_ROOT/$ARCH
 DB=$REPO_DIR/$REPO_NAME.db.tar.gz
 INCOMING_DIR=$EXCHANGE_DIR/incoming
-VERSIONS_FILE=$EXCHANGE_DIR/versions
+VERSIONS_FILE=$CONTROL_DIR/versions
 
 NAME_RE='^[a-z0-9@_+][a-z0-9@._+-]*$'
 PKGVER_RE='^[A-Za-z0-9._+]+$'

@@ -22,6 +22,7 @@ services:
     volumes:
       - repo:/srv/repo:ro
       - exchange:/srv/exchange
+      - control:/srv/control:ro
       - cache:/var/cache/dsr-aur
 
   # Validates, signs and publishes what the builder hands over; never runs PKGBUILD code.
@@ -44,6 +45,7 @@ services:
     volumes:
       - repo:/srv/repo
       - exchange:/srv/exchange
+      - control:/srv/control
       - signing:/var/lib/dsr-aur
 
   web:
@@ -56,5 +58,6 @@ services:
 volumes:
   repo:
   exchange:
+  control:
   signing:
   cache:

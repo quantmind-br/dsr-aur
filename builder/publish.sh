@@ -22,6 +22,7 @@ STALE_HOURS=${STALE_HOURS:-12}
 FILES_DB=$REPO_DIR/$REPO_NAME.files.tar.gz
 SIGN_GNUPGHOME=$STATE_DIR/gnupg
 NVCHECKER_KEYFILE=$STATE_DIR/nvchecker-keys.toml
+RECEIVE_DIR=${RECEIVE_DIR:-/var/tmp/dsr-publish}
 SIGN_KEY=
 
 gpg_sign() { GNUPGHOME=$SIGN_GNUPGHOME gpg --batch --pinentry-mode loopback "$@"; }
@@ -184,14 +185,24 @@ write_status() {
     >"$REPO_ROOT/.status.json" && mv -f "$REPO_ROOT/.status.json" "$REPO_ROOT/status.json"
 }
 
+# Copy a batch out of the exchange volume before looking at it. The builder runs third-party
+# code and controls that volume: it could swap a validated file for a symlink to one of the
+# publisher's files. cp -P never follows symlinks, and only regular files of the copy are used.
+receive_batch() {
+  rm -rf "$RECEIVE_DIR" && install -d -m 700 "$RECEIVE_DIR" || return 1
+  cp -R -P -- "$1" "$RECEIVE_DIR/batch" || return 1
+  [[ -d $RECEIVE_DIR/batch && ! -L $RECEIVE_DIR/batch ]]
+}
+
+# Publish a received batch. Returns 0 when done, 3 when the batch is unusable (discard it),
+# anything else to retry it next cycle.
 process_batch() {
-  local dir=$1 id=${1##*/} key value file base prune=no
+  local dir=$1 id=$2 key value file base prune=no
   local -a known=() added=() failed=() rejected=()
   local -A referenced=()
-  if [[ ! -f $dir/manifest ]]; then
+  if [[ ! -f $dir/manifest || -L $dir/manifest ]]; then
     warn "Batch $id has no manifest; discarding it"
-    rm -rf "$dir"
-    return 1
+    return 3
   fi
   while read -r key value || [[ -n $key ]]; do
     case $key in
@@ -236,7 +247,19 @@ process_batch() {
   else
     resolve build-failures "dsr-aur: builds recovered" "Every package built in the last cycle."
   fi
-  rm -rf "$dir"
+}
+
+# Dead man's switch: true when the builder's heartbeat (or its absence) is older than STALE_HOURS.
+builder_silent() {
+  local heartbeat=$EXCHANGE_DIR/heartbeat since
+  if [[ -f $heartbeat && ! -L $heartbeat ]]; then
+    rm -f "$STATE_DIR/no-heartbeat"
+    since=$(stat -c %Y "$heartbeat")
+  else
+    [[ -f $STATE_DIR/no-heartbeat ]] || touch "$STATE_DIR/no-heartbeat"
+    since=$(stat -c %Y "$STATE_DIR/no-heartbeat")
+  fi
+  (( $(date +%s) - since > STALE_HOURS * 3600 ))
 }
 
 # Delete package files the database stopped referencing, after a grace period, so
@@ -275,23 +298,34 @@ cleanup_unreferenced() {
 }
 
 publish_once() {
-  local dir failed
+  local entry failed rc
   trap '' TERM INT # finish the cycle; the loop waits for it
   check_tools
-  install -d "$STATE_DIR" "$REPO_DIR" "$INCOMING_DIR"
+  install -d "$STATE_DIR" "$REPO_DIR" "$CONTROL_DIR"
   exec 9>"$STATE_DIR/publish.lock"
   flock 9
 
   setup_signing
   check_versions || warn "Upstream version check failed"
   failed=0
-  for dir in "$INCOMING_DIR"/*/; do
-    [[ -d $dir ]] || continue
-    if ! process_batch "${dir%/}"; then
-      warn "Batch ${dir%/} failed; retrying next cycle"
-      failed=1
-    fi
-  done
+  if [[ -d $INCOMING_DIR && ! -L $INCOMING_DIR ]]; then
+    for entry in "$INCOMING_DIR"/*; do
+      [[ -d $entry && ! -L $entry ]] || continue
+      rc=0
+      if receive_batch "$entry"; then
+        process_batch "$RECEIVE_DIR/batch" "${entry##*/}" || rc=$?
+      else
+        rc=1
+      fi
+      if (( rc == 0 || rc == 3 )); then
+        rm -rf -- "$entry"
+      else
+        warn "Batch ${entry##*/} failed; retrying next cycle"
+        failed=1
+      fi
+    done
+  fi
+  rm -rf "$RECEIVE_DIR"
   if (( failed )); then
     alert publish-error "dsr-aur: publishing failed" "A batch could not be published; see the dsr-publish logs."
   else
@@ -299,10 +333,8 @@ publish_once() {
   fi
   cleanup_unreferenced
 
-  # Dead man's switch: the builder touches its heartbeat at least every BUILD_TIMEOUT or
-  # BUILD_INTERVAL, whichever is longer.
-  [[ -f $EXCHANGE_DIR/heartbeat ]] || touch "$EXCHANGE_DIR/heartbeat"
-  if [[ -n $(find "$EXCHANGE_DIR/heartbeat" -mmin +$((STALE_HOURS * 60))) ]]; then
+  # The builder touches its heartbeat at least every BUILD_TIMEOUT or BUILD_INTERVAL.
+  if builder_silent; then
     alert stale "dsr-aur: builder silent" "No builder activity for over ${STALE_HOURS}h: it is stuck, crashed or out of disk."
   else
     resolve stale "dsr-aur: builder back" "Build batches are arriving again."

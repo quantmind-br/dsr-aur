@@ -50,8 +50,10 @@ Push to `main`. Dokploy redeploys the stack, and the builder builds on startup.
 ## How it works
 
 `docker-compose.yml` runs three services, deployed by Dokploy from this
-repository. The builder and the publisher share one image and exchange work
-through the `exchange` volume.
+repository. The builder and the publisher share one image. The builder hands
+batches over through the `exchange` volume; the publisher copies each batch
+out without following symlinks before reading it. The publisher answers
+through the `control` volume, which the builder mounts read-only.
 
 - **builder** (`dsr-build loop`): every `BUILD_INTERVAL` it updates the
   system and, for each source, copies the PKGBUILD into a fresh directory,
@@ -64,7 +66,7 @@ through the `exchange` volume.
   --prevent-downgrade`, checks the database signatures, prunes packages that
   left the sources and writes `status.json`. Hourly it resolves upstream
   versions with [nvchecker](https://github.com/lilydjwg/nvchecker) for every
-  `.nvchecker.toml` and writes them to the exchange volume. It never runs
+  `.nvchecker.toml` and writes them to the `control` volume. It never runs
   PKGBUILD code and alone holds the signing key and `GITHUB_TOKEN`.
 - **web**: Caddy serving the `repo` volume read-only. Traefik (Dokploy)
   terminates TLS for `aur.quantforge.com.br`.
