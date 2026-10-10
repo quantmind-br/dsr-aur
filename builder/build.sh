@@ -48,16 +48,31 @@ stop_all_build_users() {
 }
 
 # Each package builds as its own user, so one PKGBUILD cannot touch another package's
-# sources, caches or home. The UID derives from the name and survives container rebuilds.
+# sources, caches or home. UIDs are allocated once and recorded in a root-only map on the
+# cache volume, so they survive container rebuilds and never collide.
 build_user_for() {
-  local name=$1 uid user
-  uid=$((BUILD_UID_BASE + $(printf '%s' "$name" | cksum | cut -d ' ' -f 1) % 100000000))
+  local name=$1 map=$CACHE_DIR/uids uid='' max=$BUILD_UID_BASE entry id user
+  if [[ -f $map ]]; then
+    while read -r entry id || [[ -n $entry ]]; do
+      [[ $entry =~ $NAME_RE && $id =~ ^[0-9]+$ ]] || continue
+      if [[ $entry == "$name" ]]; then uid=$id; fi
+      if (( id > max )); then max=$id; fi
+    done <"$map"
+  fi
+  if [[ -z $uid ]]; then
+    uid=$((max + 1))
+    echo "$name $uid" >>"$map" || return 1
+  fi
   user=dsrb$uid
-  if ! getent passwd "$user" >/dev/null; then
-    if getent passwd "$uid" >/dev/null; then
-      warn "UID $uid for $name is already taken"
+  if getent passwd "$user" >/dev/null; then
+    if [[ $(getent passwd "$user" | cut -d : -f 6) != "$CACHE_DIR/home/$name" ]]; then
+      warn "$user does not belong to $name"
       return 1
     fi
+  elif getent passwd "$uid" >/dev/null; then
+    warn "UID $uid for $name is already taken"
+    return 1
+  else
     useradd --uid "$uid" --user-group --no-create-home --home-dir "$CACHE_DIR/home/$name" --shell /bin/bash "$user" || return 1
   fi
   printf '%s\n' "$user"
