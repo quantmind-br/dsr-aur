@@ -1,0 +1,6 @@
+.git
+*.md
+docker-compose.yml
+pkgs/*/src
+pkgs/*/pkg
+*.pkg.tar.*

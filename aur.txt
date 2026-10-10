@@ -1,0 +1,4 @@
+# AUR packages to build into the repository, one per line, in build order.
+# List AUR dependencies before the packages that need them.
+# Pin a reviewed revision with name@commit, e.g.:
+#   yay-bin@0123456789abcdef0123456789abcdef01234567
