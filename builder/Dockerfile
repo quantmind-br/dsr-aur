@@ -7,9 +7,10 @@ RUN sed -i 's/^#DisableSandboxSyscalls/DisableSandboxSyscalls/' /etc/pacman.conf
     && useradd --create-home builder
 
 COPY builder/makepkg.conf /etc/makepkg.conf.d/zz-build-repo.conf
-COPY builder/build-repo.sh /usr/local/bin/build-repo
+COPY builder/common.sh builder/build.sh builder/publish.sh /usr/local/lib/dsr-aur/
+RUN ln -s /usr/local/lib/dsr-aur/build.sh /usr/local/bin/dsr-build \
+    && ln -s /usr/local/lib/dsr-aur/publish.sh /usr/local/bin/dsr-publish
 COPY aur.txt /src/aur.txt
 COPY pkgs /src/pkgs
 
-ENTRYPOINT ["build-repo"]
-CMD ["loop"]
+CMD ["dsr-build", "loop"]
