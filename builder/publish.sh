@@ -299,6 +299,8 @@ publish_incoming() {
       process_batch "$RECEIVE_DIR/batch" "$name" || rc=$?
     fi
     if (( rc == 0 || rc == 3 )); then
+      # A discarded batch is a rejection, not a clean cycle.
+      if (( rc == 3 )); then RUN_REJECTED+=("batch-$name"); fi
       rm -rf -- "./$name"
       PROCESSED=1
     else
