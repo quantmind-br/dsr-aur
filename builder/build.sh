@@ -103,7 +103,8 @@ prepare() {
   install -d -m 700 "$PRIVATE_DIR" "$PRIVATE_DIR/stage" "$PRIVATE_DIR/out" "$PRIVATE_DIR/known" "$PRIVATE_DIR/abi" \
     "$PRIVATE_DIR/abi-unfixed"
   install -d -o root -g root -m 755 "$WORK_DIR" "$WORK_DIR/sources" "$WORK_DIR/out" \
-    "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache" "$CACHE_DIR/home" "$CACHE_DIR/abi-rebuilt"
+    "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache" "$CACHE_DIR/home" "$CACHE_DIR/abi-rebuilt" \
+    "$CACHE_DIR/langdirs"
   install -d "$INCOMING_DIR"
   # Batches a killed cycle never finished handing over.
   find "$INCOMING_DIR" -mindepth 1 -maxdepth 1 -name '.*' -mmin +1440 -exec rm -rf {} +
@@ -223,6 +224,39 @@ find_missing_sonames() {
     [[ -e ${needed/#$CACHE_DIR\/needed/$REPO_DIR} ]] || rm -f "$needed"
   done
   touch "$stamp"
+}
+
+# Published packages left in the versioned directory of an older language runtime: once Arch
+# ships Python 3.14, modules in usr/lib/python3.13 are never imported, though no soname changed.
+# The same holds for Perl (usr/lib/perl5/5.42) and Ruby (usr/lib/ruby/gems/3.4.0). File lists
+# are cached per published file.
+find_stale_language_dirs() {
+  local name file listing lang version current
+  local -A runtime=()
+  for lang in python perl ruby; do
+    runtime[$lang]=$(pacman -Si "$lang" 2>/dev/null | sed -nE 's/^Version *: ([0-9]+\.[0-9]+).*/\1/p')
+  done
+  for name in "${!PUBLISHED[@]}"; do
+    file=${PUBLISHED_FILE[$name]}
+    [[ -f $REPO_DIR/$file ]] || continue
+    listing=$CACHE_DIR/langdirs/$file
+    if [[ ! -f $listing ]]; then
+      runuser -u nobody -- bsdtar -tf "$REPO_DIR/$file" 2>/dev/null | sed -nE \
+        -e 's#^usr/lib/python(3\.[0-9]+)/.*#python \1#p' \
+        -e 's#^usr/lib/perl5/(5\.[0-9]+)/.*#perl \1#p' \
+        -e 's#^usr/lib/ruby/gems/([0-9]+\.[0-9]+)\.[0-9]+/.*#ruby \1#p' | sort -u >"$listing"
+    fi
+    while read -r lang version; do
+      current=${runtime[$lang]:-}
+      if [[ -n $current && $version != "$current" ]]; then
+        ABI_BROKEN[$name]+="${ABI_BROKEN[$name]:+ }$lang-$version-now-$current"
+        log "$name needs a rebuild: it installs into $lang $version, Arch now ships $current"
+      fi
+    done <"$listing"
+  done
+  for listing in "$CACHE_DIR"/langdirs/*; do
+    [[ -e ${listing/#$CACHE_DIR\/langdirs/$REPO_DIR} ]] || rm -f "$listing"
+  done
 }
 
 # Latest upstream versions resolved by dsr-publish (which holds the GitHub token).
@@ -704,6 +738,7 @@ build_once() {
   register_repos
   find_abi_broken
   find_missing_sonames
+  find_stale_language_dirs
   PHASE=build
   build_all
   # Without srcinfo for every source the publisher cannot tell what to keep.
