@@ -1,0 +1,13 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+pkgname=dsr-hello
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Example package for the dsr-aur repository'
+arch=('any')
+license=('MIT')
+source=('dsr-hello')
+sha256sums=('8bed615618428a6744769dfd020c6e6f45a6da099115a7d90cc28c61eefadbdb')
+
+package() {
+  install -Dm755 dsr-hello "$pkgdir/usr/bin/dsr-hello"
+}
