@@ -26,6 +26,7 @@ SIGN_GNUPGHOME=$STATE_DIR/gnupg
 NVCHECKER_KEYFILE=$STATE_DIR/nvchecker-keys.toml
 RECEIVE_DIR=${RECEIVE_DIR:-/var/tmp/dsr-publish}
 SIGN_KEY=
+PROCESSED=0     # a batch was consumed in this run
 RUN_FAILED=()   # failures across every batch published in this run
 RUN_REJECTED=()
 
@@ -244,10 +245,48 @@ write_status() {
 # Copy a batch out of the exchange volume before looking at it. The builder runs third-party
 # code and controls that volume: it could swap a validated file for a symlink to one of the
 # publisher's files. cp -P never follows symlinks, and only regular files of the copy are used.
+# Returns 0 when the copy is usable, 3 when it holds symlinks (discard), 1 on copy errors.
 receive_batch() {
   rm -rf "$RECEIVE_DIR" && install -d -m 700 "$RECEIVE_DIR" || return 1
   cp -R -P -- "$1" "$RECEIVE_DIR/batch" || return 1
-  [[ -d $RECEIVE_DIR/batch && ! -L $RECEIVE_DIR/batch ]]
+  [[ -d $RECEIVE_DIR/batch && ! -L $RECEIVE_DIR/batch ]] || return 3
+  # A symlinked "packages" directory would lead every later step back into the exchange volume.
+  if [[ -n $(find "$RECEIVE_DIR/batch" -type l -print -quit) ]]; then
+    warn "Batch ${1##*/} contains symlinks; discarding it"
+    return 3
+  fi
+}
+
+# Publish the batches in the incoming directory, oldest first. The builder can replace any
+# path in the exchange volume, so work from inside the real incoming directory: after the cd,
+# swapping an ancestor for a symlink cannot redirect the copy or the removal, and only names
+# shaped like batch IDs are touched.
+publish_incoming() {
+  local name rc
+  cd "$INCOMING_DIR" 2>/dev/null || return 0
+  if [[ $(pwd -P) != "$INCOMING_DIR" ]]; then
+    warn "$INCOMING_DIR resolves elsewhere; not touching it"
+    cd /
+    return 1
+  fi
+  for name in *; do
+    [[ $name =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+$ && -d $name && ! -L $name ]] || continue
+    rc=0
+    receive_batch "./$name" || rc=$?
+    if (( rc == 0 )); then
+      process_batch "$RECEIVE_DIR/batch" "$name" || rc=$?
+    fi
+    if (( rc == 0 || rc == 3 )); then
+      rm -rf -- "./$name"
+      PROCESSED=1
+    else
+      # Later batches wait: applied after it, this older batch would undo their changes.
+      warn "Batch $name failed; retrying it, and holding later batches, next cycle"
+      cd /
+      return 1
+    fi
+  done
+  cd /
 }
 
 # Publish a received batch. Returns 0 when done, 3 when the batch is unusable (discard it),
@@ -367,7 +406,7 @@ cleanup_unreferenced() {
 }
 
 publish_once() {
-  local entry failed processed rc
+  local failed
   trap '' TERM INT # finish the cycle; the loop waits for it
   check_tools
   install -d "$STATE_DIR" "$REPO_DIR" "$CONTROL_DIR"
@@ -377,32 +416,12 @@ publish_once() {
   setup_signing
   check_versions || warn "Upstream version check failed"
   failed=0
-  processed=0
-  if [[ -d $INCOMING_DIR && ! -L $INCOMING_DIR ]]; then
-    for entry in "$INCOMING_DIR"/*; do
-      [[ -d $entry && ! -L $entry ]] || continue
-      rc=0
-      if receive_batch "$entry"; then
-        process_batch "$RECEIVE_DIR/batch" "${entry##*/}" || rc=$?
-      else
-        rc=1
-      fi
-      if (( rc == 0 || rc == 3 )); then
-        rm -rf -- "$entry"
-        processed=1
-      else
-        # Later batches wait: applied after it, this older batch would undo their changes.
-        warn "Batch ${entry##*/} failed; retrying it, and holding later batches, next cycle"
-        failed=1
-        break
-      fi
-    done
-  fi
+  publish_incoming || failed=1
   rm -rf "$RECEIVE_DIR"
   if (( ${#RUN_FAILED[@]} + ${#RUN_REJECTED[@]} )); then
     alert build-failures "dsr-aur: build failures" \
       "Failed: ${RUN_FAILED[*]:-none}"$'\n'"Rejected: ${RUN_REJECTED[*]:-none}"$'\n'"https://aur.quantforge.com.br/status.json"
-  elif (( processed )); then
+  elif (( PROCESSED )); then
     resolve build-failures "dsr-aur: builds recovered" "Every package built in the last cycle."
   fi
   # repo-add only warns when signing fails, and a failed check must not wait for the next
