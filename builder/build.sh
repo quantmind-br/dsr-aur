@@ -22,6 +22,10 @@ MIN_FREE_GB=${MIN_FREE_GB:-5}
 STEP_TIMEOUT=${STEP_TIMEOUT:-1h}
 HOME_CACHE_MAX_GB=${HOME_CACHE_MAX_GB:-5}
 ABI_CHECK_HOURS=${ABI_CHECK_HOURS:-24}
+# Remote mode (CI): the published repository is read over HTTPS instead of a local volume, and
+# its database must carry a signature by SIGN_KEY_FPR.
+REPO_URL=${REPO_URL:-}
+SIGN_KEY_FPR=${SIGN_KEY_FPR:-}
 FORCE=${FORCE:-0}
 export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-1G}
 
@@ -128,9 +132,64 @@ register_repos() {
     dir=${section#*:}
     section=${section%%:*}
     grep -q "^\[$section\]" /etc/pacman.conf && continue
-    [[ -e $dir/$section.db ]] || continue
-    printf '\n[%s]\nSigLevel = Never\nServer = file://%s\n' "$section" "$dir" >>/etc/pacman.conf
+    [[ -e $dir/$section.db || -e $dir/$section.db.tar.gz ]] || continue
+    if [[ -n $REPO_URL && $section == "$REPO_NAME" ]]; then
+      # Packages come over HTTPS: pacman checks them against the pinned key.
+      printf '\n[%s]\nSigLevel = Required\nServer = %s/%s\n' "$section" "$REPO_URL" "$ARCH" >>/etc/pacman.conf
+    else
+      printf '\n[%s]\nSigLevel = Never\nServer = file://%s\n' "$section" "$dir" >>/etc/pacman.conf
+    fi
   done
+}
+
+# Remote mode: download the published database, accept it only with a signature by the pinned
+# key (a tampered mirror must not make the builder skip or downgrade packages), and let pacman
+# trust that key for the packages it installs from the repository.
+fetch_remote_db() {
+  local tmp code
+  [[ -n $REPO_URL ]] || return 0
+  if [[ ! $SIGN_KEY_FPR =~ ^[0-9A-F]{40}$ ]]; then
+    warn "REPO_URL requires SIGN_KEY_FPR (40 hex digits)"
+    return 1
+  fi
+  tmp=$(mktemp -d)
+  if ! curl -fsSL --max-time 60 "$REPO_URL/$REPO_NAME.asc" -o "$tmp/key.asc" ||
+    ! GNUPGHOME=$tmp gpg --batch --quiet --import "$tmp/key.asc" 2>/dev/null ||
+    # The Arch image ships its keyring without a local signing key, which lsign needs.
+    { [[ -z $(gpg --homedir /etc/pacman.d/gnupg --list-secret-keys 2>/dev/null) ]] &&
+      ! pacman-key --init >/dev/null 2>&1; } ||
+    ! pacman-key --add "$tmp/key.asc" >/dev/null 2>&1 ||
+    ! pacman-key --lsign-key "$SIGN_KEY_FPR" >/dev/null 2>&1; then
+    warn "Cannot import the repository key $SIGN_KEY_FPR"
+    rm -rf "$tmp"
+    return 1
+  fi
+  install -d "$REPO_DIR"
+  code=$(curl -sSL --max-time 120 -o "$tmp/db" -w '%{http_code}' "$REPO_URL/$ARCH/$REPO_NAME.db") || code=000
+  if [[ $code == 404 ]]; then
+    log "No published database yet"
+    rm -rf "$tmp"
+    return 0
+  fi
+  if [[ $code != 200 ]] ||
+    ! curl -fsSL --max-time 60 -o "$tmp/db.sig" "$REPO_URL/$ARCH/$REPO_NAME.db.sig" ||
+    ! GNUPGHOME=$tmp gpg --batch --status-fd 1 --verify "$tmp/db.sig" "$tmp/db" 2>/dev/null |
+      grep -q "^\[GNUPG:\] VALIDSIG $SIGN_KEY_FPR "; then
+    warn "Cannot fetch a database signed by $SIGN_KEY_FPR from $REPO_URL"
+    rm -rf "$tmp"
+    return 1
+  fi
+  mv "$tmp/db" "$DB"
+  rm -rf "$tmp"
+}
+
+# Path of a published package file for analysis; remote mode downloads it on demand.
+published_path() {
+  local file=$1
+  if [[ ! -f $REPO_DIR/$file && -n $REPO_URL ]]; then
+    curl -fsSL --max-time 600 -o "$REPO_DIR/.$file" "$REPO_URL/$ARCH/$file" && mv "$REPO_DIR/.$file" "$REPO_DIR/$file"
+  fi
+  [[ -f $REPO_DIR/$file ]] && printf '%s\n' "$REPO_DIR/$file"
 }
 
 load_published() {
@@ -190,18 +249,20 @@ list_needed() {
 # the files databases instead. It runs every ABI_CHECK_HOURS (the files databases are large),
 # and the needed sonames of each published file are cached, since published files never change.
 find_missing_sonames() {
-  local stamp=$CACHE_DIR/abi-checked name file needed soname
-  local -A wanted=() present=()
+  local stamp=$CACHE_DIR/abi-checked name file needed soname path
+  local -A wanted=() present=() current=()
   if [[ -f $stamp && -z $(find "$stamp" -mmin +$((ABI_CHECK_HOURS * 60))) ]]; then return 0; fi
   timeout "$STEP_TIMEOUT" pacman -Fy >/dev/null || return 0
   install -d -m 755 "$CACHE_DIR/needed"
   for name in "${!PUBLISHED[@]}"; do
     file=${PUBLISHED_FILE[$name]}
-    [[ -f $REPO_DIR/$file ]] || continue
+    current[$file]=1
     needed=$CACHE_DIR/needed/$file
-    if [[ ! -f $needed ]] && ! list_needed "$REPO_DIR/$file" >"$needed"; then
-      rm -f "$needed"
-      continue
+    if [[ ! -f $needed ]]; then
+      if ! path=$(published_path "$file") || ! list_needed "$path" >"$needed"; then
+        rm -f "$needed"
+        continue
+      fi
     fi
     while read -r soname; do
       if [[ -n $soname ]]; then wanted[$soname]+=" $name"; fi
@@ -221,7 +282,7 @@ find_missing_sonames() {
   fi
   # Cached lists of files no longer published are dropped.
   for needed in "$CACHE_DIR"/needed/*; do
-    [[ -e ${needed/#$CACHE_DIR\/needed/$REPO_DIR} ]] || rm -f "$needed"
+    if [[ -e $needed && -z ${current[${needed##*/}]:-} ]]; then rm -f "$needed"; fi
   done
   touch "$stamp"
 }
@@ -231,17 +292,18 @@ find_missing_sonames() {
 # The same holds for Perl (usr/lib/perl5/5.42) and Ruby (usr/lib/ruby/gems/3.4.0). File lists
 # are cached per published file.
 find_stale_language_dirs() {
-  local name file listing lang version current
-  local -A runtime=()
+  local name file listing lang version current path
+  local -A runtime=() published=()
   for lang in python perl ruby; do
     runtime[$lang]=$(pacman -Si "$lang" 2>/dev/null | sed -nE 's/^Version *: ([0-9]+\.[0-9]+).*/\1/p')
   done
   for name in "${!PUBLISHED[@]}"; do
     file=${PUBLISHED_FILE[$name]}
-    [[ -f $REPO_DIR/$file ]] || continue
+    published[$file]=1
     listing=$CACHE_DIR/langdirs/$file
     if [[ ! -f $listing ]]; then
-      runuser -u nobody -- bsdtar -tf "$REPO_DIR/$file" 2>/dev/null | sed -nE \
+      path=$(published_path "$file") || continue
+      runuser -u nobody -- bsdtar -tf "$path" 2>/dev/null | sed -nE \
         -e 's#^usr/lib/python(3\.[0-9]+)/.*#python \1#p' \
         -e 's#^usr/lib/perl5/(5\.[0-9]+)/.*#perl \1#p' \
         -e 's#^usr/lib/ruby/gems/([0-9]+\.[0-9]+)\.[0-9]+/.*#ruby \1#p' | sort -u >"$listing"
@@ -255,7 +317,7 @@ find_stale_language_dirs() {
     done <"$listing"
   done
   for listing in "$CACHE_DIR"/langdirs/*; do
-    [[ -e ${listing/#$CACHE_DIR\/langdirs/$REPO_DIR} ]] || rm -f "$listing"
+    if [[ -e $listing && -z ${published[${listing##*/}]:-} ]]; then rm -f "$listing"; fi
   done
 }
 
@@ -361,7 +423,10 @@ is_published() {
   [[ $FORCE == 1 ]] && return 1
   version=$(full_version "$1")
   while read -r pkg; do
-    [[ -n ${PUBLISHED[$pkg]:-} && -f $REPO_DIR/${PUBLISHED_FILE[$pkg]} ]] || return 1
+    [[ -n ${PUBLISHED[$pkg]:-} ]] || return 1
+    # A file the database lists but the disk lost is rebuilt (the publisher restores it). In
+    # remote mode the publisher's daily audit watches the files instead.
+    [[ -n $REPO_URL || -f $REPO_DIR/${PUBLISHED_FILE[$pkg]} ]] || return 1
     (( $(vercmp "${PUBLISHED[$pkg]}" "$version") >= 0 )) || return 1
   done < <(srcinfo_pkgnames "$1")
 }
@@ -743,6 +808,7 @@ build_once() {
   PHASE=system-update
   setup_system
   PHASE=database
+  fetch_remote_db || exit 1
   load_published || exit 1
   load_versions
   PHASE=sources
