@@ -31,18 +31,30 @@ check_tools() {
 }
 
 # Print "name version filename" for each package in the database.
-# Fails when the database exists but cannot be read, so callers never mistake that for "empty".
+# Fails when the database exists but cannot be read or holds an incomplete entry, so callers
+# never mistake that for "empty".
 db_versions() {
   local entries
   [[ -e $DB ]] || return 0
   entries=$(tar -tf "$DB") || return 1
   grep -q '/desc$' <<<"$entries" || return 0
   tar -xOf "$DB" --wildcards '*/desc' | awk '
-    function flush() { if (name != "") print name, version, file; name = version = file = "" }
+    function flush() {
+      if (name != "" || version != "" || file != "") {
+        if (name == "" || version == "" || file == "") bad = 1
+        else print name, version, file
+      }
+      name = version = file = ""
+    }
     $0 == "%FILENAME%" { flush(); getline file; next }
     $0 == "%NAME%" { getline name; next }
     $0 == "%VERSION%" { getline version; next }
-    END { flush() }'
+    END { flush(); exit bad }'
+}
+
+# The database is gone although packages remain: a lost database, not an empty repository.
+db_lost() {
+  [[ ! -e $DB ]] && compgen -G "$REPO_DIR/*.pkg.tar.*" >/dev/null
 }
 
 # Run "$0 once" now and every $1 (sleep syntax). A stop signal waits for the running cycle.

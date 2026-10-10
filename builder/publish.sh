@@ -187,6 +187,10 @@ prune_packages() {
   local -a stale=()
   local -A keep=()
   for name; do keep[$name]=1; done
+  if db_lost; then
+    warn "The database is missing but packages remain; not pruning"
+    return 0
+  fi
   if ! listing=$(db_versions); then
     warn "Cannot read the database; not pruning"
     return 0
@@ -309,6 +313,12 @@ builder_silent() {
 cleanup_unreferenced() {
   local listing state=$STATE_DIR/unreferenced now file base since
   local -A referenced=() first_seen=()
+  if db_lost; then
+    warn "The database is missing but packages remain; not deleting anything"
+    alert database "dsr-aur: database missing" "$DB is missing while packages remain; nothing is deleted until it is restored."
+    return 0
+  fi
+  resolve database "dsr-aur: database back" "The repository database is present again."
   if ! listing=$(db_versions); then
     warn "Cannot read the database; not cleaning up"
     return 0
@@ -370,6 +380,13 @@ publish_once() {
     done
   fi
   rm -rf "$RECEIVE_DIR"
+  # repo-add only warns when signing fails, and a failed check must not wait for the next
+  # package to be retried.
+  if ! verify_db_signatures; then
+    alert signature "dsr-aur: database signature invalid" "The repository database signature is invalid and re-signing failed."
+  else
+    resolve signature "dsr-aur: database signature valid" "The repository database signature verifies again."
+  fi
   if (( failed )); then
     alert publish-error "dsr-aur: publishing failed" "A batch could not be published; see the dsr-publish logs."
   else
