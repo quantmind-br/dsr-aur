@@ -26,6 +26,9 @@ FILES_DB=$REPO_DIR/$REPO_NAME.files.tar.gz
 SIGN_GNUPGHOME=$STATE_DIR/gnupg
 NVCHECKER_KEYFILE=$STATE_DIR/nvchecker-keys.toml
 RECEIVE_DIR=${RECEIVE_DIR:-/var/tmp/dsr-publish}
+# GitHub repository whose CI attaches build batches to the release tagged CI_RELEASE_TAG.
+CI_REPO=${CI_REPO:-}
+CI_RELEASE_TAG=${CI_RELEASE_TAG:-batches}
 SIGN_KEY=
 PROCESSED=0     # a batch was consumed in this run
 RUN_FAILED=()   # failures across every batch published in this run
@@ -268,6 +271,54 @@ write_status() {
 # Copy a batch out of the exchange volume before looking at it. The builder runs third-party
 # code and controls that volume: it could swap a validated file for a symlink to one of the
 # publisher's files. cp -P never follows symlinks, and only regular files of the copy are used.
+# Download the batches CI attached to the public CI_RELEASE_TAG release into the incoming
+# directory, where they are handled like any other untrusted batch. No token is needed; an
+# ETag makes unchanged polls free of API rate limit. Archives are unpacked as nobody.
+fetch_ci_batches() {
+  local api tmp code name url id seen=$STATE_DIR/ci-fetched etag=''
+  local -a auth=()
+  [[ -n $CI_REPO ]] || return 0
+  api="https://api.github.com/repos/$CI_REPO/releases/tags/$CI_RELEASE_TAG"
+  if [[ -n ${GITHUB_TOKEN:-} ]]; then auth=(-H "Authorization: Bearer $GITHUB_TOKEN"); fi
+  if [[ -f $STATE_DIR/ci-etag ]]; then etag=$(<"$STATE_DIR/ci-etag"); fi
+  tmp=$(mktemp -d)
+  code=$(curl -sS --max-time 30 -D "$tmp/headers" -o "$tmp/release" -w '%{http_code}' \
+    ${etag:+-H "If-None-Match: $etag"} "${auth[@]}" "$api") || code=000
+  if [[ $code == 304 || $code == 404 ]]; then
+    rm -rf "$tmp"
+    return 0
+  fi
+  if [[ $code != 200 ]]; then
+    warn "Cannot list CI batches (HTTP $code)"
+    rm -rf "$tmp"
+    return 1
+  fi
+  touch "$seen"
+  install -d "$INCOMING_DIR"
+  chown nobody:nobody "$tmp"
+  # shellcheck disable=SC2016 # $1 and $2 expand in the inner shell
+  while IFS=$'\t' read -r name url; do
+    [[ $name =~ ^([0-9]{8}T[0-9]{6}Z-[0-9]+)\.tar\.gz$ ]] || continue
+    id=${BASH_REMATCH[1]}
+    if grep -qxF "$id" "$seen" || [[ -e $INCOMING_DIR/$id ]]; then continue; fi
+    if ! curl -fsSL --max-time 900 -o "$tmp/$id.tar.gz" "$url" ||
+      ! runuser -u nobody -- sh -c 'mkdir "$1/x" && bsdtar -xf "$1/$2.tar.gz" -C "$1/x"' _ "$tmp" "$id" ||
+      [[ ! -d $tmp/x/$id || -L $tmp/x/$id ]]; then
+      warn "Cannot unpack CI batch $id; retrying next cycle"
+      rm -rf "$tmp"
+      return 1
+    fi
+    mv "$tmp/x/$id" "$INCOMING_DIR/.ci-$id" && mv "$INCOMING_DIR/.ci-$id" "$INCOMING_DIR/$id" || return 1
+    rm -rf "$tmp/x" "$tmp/$id.tar.gz"
+    echo "$id" >>"$seen"
+    touch "$STATE_DIR/ci-heartbeat" # a batch arrives every build interval, even when idle
+    log "Fetched CI batch $id"
+  done < <(jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"' "$tmp/release" 2>/dev/null)
+  sed -n 's/^etag: *//Ip' "$tmp/headers" | tr -d '\r' >"$STATE_DIR/ci-etag"
+  tail -n 500 "$seen" >"$seen.tmp" && mv -f "$seen.tmp" "$seen"
+  rm -rf "$tmp"
+}
+
 # Returns 0 when the copy is usable, 3 when it holds symlinks (discard), 1 on copy errors.
 receive_batch() {
   rm -rf "$RECEIVE_DIR" && install -d -m 700 "$RECEIVE_DIR" || return 1
@@ -387,15 +438,20 @@ process_batch() {
   RUN_REJECTED+=("${rejected[@]}")
 }
 
-# Dead man's switch: true when the builder's heartbeat (or its absence) is older than STALE_HOURS.
+# Dead man's switch: true when no builder showed life for STALE_HOURS. Life is the VPS builder's
+# heartbeat or a batch fetched from CI; when neither ever happened, the clock starts now.
 builder_silent() {
-  local heartbeat=$EXCHANGE_DIR/heartbeat since
-  if [[ -f $heartbeat && ! -L $heartbeat ]]; then
-    rm -f "$STATE_DIR/no-heartbeat"
-    since=$(stat -c %Y "$heartbeat")
-  else
+  local heartbeat=$EXCHANGE_DIR/heartbeat since=0 time
+  if [[ -f $heartbeat && ! -L $heartbeat ]]; then since=$(stat -c %Y "$heartbeat"); fi
+  if [[ -f $STATE_DIR/ci-heartbeat ]]; then
+    time=$(stat -c %Y "$STATE_DIR/ci-heartbeat")
+    if (( time > since )); then since=$time; fi
+  fi
+  if (( since == 0 )); then
     [[ -f $STATE_DIR/no-heartbeat ]] || touch "$STATE_DIR/no-heartbeat"
     since=$(stat -c %Y "$STATE_DIR/no-heartbeat")
+  else
+    rm -f "$STATE_DIR/no-heartbeat"
   fi
   (( $(date +%s) - since > STALE_HOURS * 3600 ))
 }
@@ -446,6 +502,7 @@ publish_once() {
 
   setup_signing
   check_versions || warn "Upstream version check failed"
+  fetch_ci_batches || warn "Fetching CI batches failed"
   failed=0
   free=$(df --output=avail -BG "$REPO_DIR" | tail -n 1 | tr -dc '0-9')
   if (( free < MIN_FREE_GB )); then
