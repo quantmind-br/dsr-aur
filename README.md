@@ -48,6 +48,11 @@ The VPS is ARM64, so the builder runs as `linux/amd64` through QEMU user-mode
 emulation (`qemu-user-static` and `binfmt-support` on the host). Repackaging
 `-bin` packages is quick; compiling is several times slower than native.
 
+Compiled packages target the Zen 5 desktop with `-march=x86-64-v3
+-mtune=znver5` (Rust `target-cpu=x86-64-v3`, `GOAMD64=v3`), set in
+`builder/makepkg.conf`. Do not raise it to `x86-64-v4`: QEMU cannot execute
+AVX-512, and builds run their own binaries.
+
 PKGBUILD code runs as the unprivileged `builder` user without sudo. Root
 installs build dependencies and holds the signing key. AUR PKGBUILDs are still
 third-party code: review them before adding, and pin a commit.

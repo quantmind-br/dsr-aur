@@ -6,7 +6,7 @@ RUN sed -i 's/^#DisableSandboxSyscalls/DisableSandboxSyscalls/' /etc/pacman.conf
     && rm -rf /var/cache/pacman/pkg/* \
     && useradd --create-home builder
 
-COPY builder/makepkg.conf /etc/makepkg.conf.d/build-repo.conf
+COPY builder/makepkg.conf /etc/makepkg.conf.d/zz-build-repo.conf
 COPY builder/build-repo.sh /usr/local/bin/build-repo
 COPY aur.txt /src/aur.txt
 COPY pkgs /src/pkgs
