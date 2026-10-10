@@ -139,8 +139,8 @@ docker exec compose-quantify-neural-alarm-8a391p-publisher-1 dsr-publish once
 ```
 
 The signing key is generated on the first run and kept in the `signing`
-volume (publisher only). Back it up: losing it means a new key that every
-client must trust again.
+volume (publisher only). An encrypted backup lives outside the VPS; see
+[Signing key](#signing-key).
 
 Settings (Dokploy environment):
 
@@ -156,3 +156,31 @@ Settings (Dokploy environment):
 | `NOTIFY_URL` | unset | Publisher: ntfy topic URL for alerts |
 | `STALE_HOURS` | `12` | Publisher: alert when the builder's heartbeat is older than this |
 | `ALLOW_UNPINNED_AUR` | `0` | Builder: accept `aur.txt` entries without `@commit` |
+
+## Signing key
+
+Back up the private key, encrypted to an SSH key you keep (age accepts
+`ssh-ed25519` recipients):
+
+```bash
+ssh quantforge 'docker exec compose-quantify-neural-alarm-8a391p-publisher-1 \
+  env GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --armor --export-secret-keys' |
+  docker run --rm -i -v ~/.ssh/id_ed25519.pub:/k.pub:ro alpine sh -c 'apk add -q age && age -R /k.pub' \
+  >dsr-aur-signing-key.asc.age
+```
+
+Restore into a fresh `signing` volume:
+
+```bash
+docker run --rm -i -v ~/.ssh/id_ed25519:/k:ro alpine sh -c 'apk add -q age && age -d -i /k' <dsr-aur-signing-key.asc.age |
+  ssh quantforge 'docker exec -i compose-quantify-neural-alarm-8a391p-publisher-1 \
+    sh -c "install -d -m 700 /var/lib/dsr-aur/gnupg && GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --import"'
+```
+
+Rotation, if the key is lost or exposed:
+
+1. Generate the new key in the publisher (move the old `gnupg` directory
+   aside) and publish both public keys in `dsr-aur.asc`.
+2. Clients run `pacman-key --add` and `--lsign-key` for the new fingerprint.
+3. After every client trusts it, remove the old key from `dsr-aur.asc`. If
+   it was exposed, clients run `pacman-key --delete <old fingerprint>`.
