@@ -259,6 +259,18 @@ find_stale_language_dirs() {
   done
 }
 
+# Packages a client asked to rebuild (REBUILD="dsr-foo dsr-bar"), e.g. dsr-aur-check after it
+# found an undefined symbol that no metadata reveals.
+add_requested_rebuilds() {
+  local name
+  for name in ${REBUILD:-}; do
+    if [[ $name =~ $NAME_RE && -n ${PUBLISHED[$name]:-} ]]; then
+      ABI_BROKEN[$name]+="${ABI_BROKEN[$name]:+ }requested-by-client"
+      log "$name needs a rebuild: requested by a client"
+    fi
+  done
+}
+
 # Latest upstream versions resolved by dsr-publish (which holds the GitHub token).
 load_versions() {
   local name version
@@ -739,6 +751,7 @@ build_once() {
   find_abi_broken
   find_missing_sonames
   find_stale_language_dirs
+  add_requested_rebuilds
   PHASE=build
   build_all
   # Without srcinfo for every source the publisher cannot tell what to keep.
