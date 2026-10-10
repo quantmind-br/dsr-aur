@@ -156,6 +156,7 @@ Settings (Dokploy environment):
 | `BUILDER_CPUS` | `1.5` | CPU limit for the builder |
 | `BUILDER_MEMORY` | `6g` | Memory limit for the builder |
 | `PACKAGER` | `quantmind-br <dsrodrigues20@gmail.com>` | Packager recorded in built packages |
+| `SIGN_KEY_FPR` | unset | Publisher: fingerprint of the active signing key (see [Signing key](#signing-key)) |
 | `GITHUB_TOKEN` | unset | Publisher only: token for nvchecker (lifts the 60 requests/hour limit; required by `include_prereleases` with `use_latest_release`) |
 | `DELETE_GRACE_HOURS` | `24` | How long unreferenced package files stay downloadable |
 | `NOTIFY_URL` | unset | Publisher: ntfy topic URL for alerts |
@@ -164,28 +165,49 @@ Settings (Dokploy environment):
 
 ## Signing key
 
-Back up the private key, encrypted to an SSH key you keep (age accepts
+The publisher signs with `SIGN_KEY_FPR` (set it in Dokploy). If that key is
+missing from the `signing` volume, publishing stops and an alert goes out;
+it never falls back to a new key that clients would reject. Without
+`SIGN_KEY_FPR`, a key is generated on the first run. `dsr-aur.asc` carries
+every public key in the keyring.
+
+Names used below: `P=compose-quantify-neural-alarm-8a391p` (Dokploy project)
+and the image `dsr-aur-builder:local` on the VPS.
+
+**Back up** the private key, encrypted to an SSH key you keep (age accepts
 `ssh-ed25519` recipients):
 
 ```bash
-ssh quantforge 'docker exec compose-quantify-neural-alarm-8a391p-publisher-1 \
-  env GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --armor --export-secret-keys' |
+ssh quantforge "docker exec $P-publisher-1 env GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --armor --export-secret-keys" |
   docker run --rm -i -v ~/.ssh/id_ed25519.pub:/k.pub:ro alpine sh -c 'apk add -q age && age -R /k.pub' \
   >dsr-aur-signing-key.asc.age
 ```
 
-Restore into a fresh `signing` volume:
+**Restore** into an empty or damaged `signing` volume, with the publisher
+stopped so it cannot act on a half-restored keyring, and check that the
+fingerprint matches `SIGN_KEY_FPR`:
 
 ```bash
+ssh quantforge "docker stop $P-publisher-1"
 docker run --rm -i -v ~/.ssh/id_ed25519:/k:ro alpine sh -c 'apk add -q age && age -d -i /k' <dsr-aur-signing-key.asc.age |
-  ssh quantforge 'docker exec -i compose-quantify-neural-alarm-8a391p-publisher-1 \
-    sh -c "install -d -m 700 /var/lib/dsr-aur/gnupg && GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --import"'
+  ssh quantforge "docker run --rm -i -v ${P}_signing:/var/lib/dsr-aur --entrypoint sh dsr-aur-builder:local -c \
+    'install -d -m 700 /var/lib/dsr-aur/gnupg && export GNUPGHOME=/var/lib/dsr-aur/gnupg &&
+     gpg --batch --import && gpg --list-secret-keys --with-colons | grep ^fpr'"
+ssh quantforge "docker start $P-publisher-1"
 ```
 
-Rotation, if the key is lost or exposed:
+**Rotate** (key lost or exposed):
 
-1. Generate the new key in the publisher (move the old `gnupg` directory
-   aside) and publish both public keys in `dsr-aur.asc`.
-2. Clients run `pacman-key --add` and `--lsign-key` for the new fingerprint.
-3. After every client trusts it, remove the old key from `dsr-aur.asc`. If
-   it was exposed, clients run `pacman-key --delete <old fingerprint>`.
+1. Generate the new key next to the old one:
+   `docker exec $P-publisher-1 env GNUPGHOME=/var/lib/dsr-aur/gnupg gpg --batch --passphrase '' --quick-gen-key "dsr-aur repository signing key" ed25519 sign never`.
+   Within a minute `dsr-aur.asc` carries both public keys.
+2. On every client: `curl -fsSL https://aur.quantforge.com.br/dsr-aur.asc | sudo pacman-key --add -`
+   and `sudo pacman-key --lsign-key <new fingerprint>`.
+3. Set `SIGN_KEY_FPR` to the new fingerprint in Dokploy, redeploy, then
+   re-sign what is already published: `docker exec $P-publisher-1 dsr-publish resign`.
+   Signatures are not cached by Cloudflare, so clients see them at once.
+4. Back up the new key.
+5. Once every client trusts the new key, delete the old one from the keyring
+   (`gpg --batch --yes --delete-secret-and-public-key <old fingerprint>` with
+   the same `GNUPGHOME`). If it was exposed, clients run
+   `sudo pacman-key --delete <old fingerprint>`.

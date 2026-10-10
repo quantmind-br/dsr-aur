@@ -4,9 +4,10 @@
 # upstream versions. This side never runs PKGBUILD code; it alone holds the signing
 # key and the optional GitHub token.
 #
-# Usage: dsr-publish [once|loop]
-#   once  publish pending batches, refresh upstream versions when due, then exit
-#   loop  run "once" now and again every $PUBLISH_INTERVAL
+# Usage: dsr-publish [once|loop|resign]
+#   once    publish pending batches, refresh upstream versions when due, then exit
+#   loop    run "once" now and again every $PUBLISH_INTERVAL
+#   resign  re-sign all published files with the active key (after a key rotation)
 set -euo pipefail
 # shellcheck source=common.sh source-path=SCRIPTDIR
 source "$(dirname "$(readlink -f "$0")")/common.sh"
@@ -72,15 +73,32 @@ flush_alerts() {
   done
 }
 
+# The active key is SIGN_KEY_FPR when set; it must be in the keyring, so a lost keyring stops
+# publishing (and alerts) instead of silently signing with a new key that clients reject.
+# Without SIGN_KEY_FPR, a key is generated on the first run. Every public key in the keyring
+# is exported, so clients can trust a new key before a rotation switches to it.
 setup_signing() {
+  local secrets
   install -d -m 700 "$SIGN_GNUPGHOME"
-  if ! gpg_sign --list-secret-keys --with-colons 2>/dev/null | grep -q '^sec'; then
-    log "Generating repository signing key"
-    gpg_sign --passphrase '' --quick-gen-key "$REPO_NAME repository signing key" ed25519 sign never
+  secrets=$(gpg_sign --list-secret-keys --with-colons 2>/dev/null || true)
+  if [[ -n ${SIGN_KEY_FPR:-} ]]; then
+    if ! grep -q "^fpr:*:$SIGN_KEY_FPR:" <<<"$secrets"; then
+      warn "Signing key $SIGN_KEY_FPR is not in $SIGN_GNUPGHOME; not publishing"
+      alert signing-key "dsr-aur: signing key missing" "Key $SIGN_KEY_FPR is not in the publisher keyring. Restore it from the backup."
+      flush_alerts
+      exit 1
+    fi
+    SIGN_KEY=$SIGN_KEY_FPR
+  else
+    if ! grep -q '^sec' <<<"$secrets"; then
+      log "Generating repository signing key"
+      gpg_sign --passphrase '' --quick-gen-key "$REPO_NAME repository signing key" ed25519 sign never
+    fi
+    SIGN_KEY=$(gpg_sign --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')
   fi
-  SIGN_KEY=$(gpg_sign --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')
   [[ -n $SIGN_KEY ]] || { warn "No signing key"; exit 1; }
-  gpg_sign --armor --export "$SIGN_KEY" >"$REPO_ROOT/.$REPO_NAME.asc"
+  resolve signing-key "dsr-aur: signing key back" "The publisher found its signing key again."
+  gpg_sign --armor --export >"$REPO_ROOT/.$REPO_NAME.asc"
   if cmp -s "$REPO_ROOT/.$REPO_NAME.asc" "$REPO_ROOT/$REPO_NAME.asc"; then
     rm -f "$REPO_ROOT/.$REPO_NAME.asc"
   else
@@ -403,11 +421,34 @@ publish_once() {
   flush_alerts
 }
 
+# Re-sign every published package and both databases with the active key (key rotation).
+resign_all() {
+  local listing file db
+  trap '' TERM INT
+  check_tools
+  exec 9>"$STATE_DIR/publish.lock"
+  flock 9
+  setup_signing
+  listing=$(db_versions) || { warn "Cannot read the database"; exit 1; }
+  while read -r _ _ file; do
+    [[ -n $file && -f $REPO_DIR/$file ]] || continue
+    gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" \
+      --output "$REPO_DIR/.$file.sig" "$REPO_DIR/$file" && mv -f "$REPO_DIR/.$file.sig" "$REPO_DIR/$file.sig"
+  done <<<"$listing"
+  for db in "$DB" "$FILES_DB"; do
+    [[ -e $db ]] || continue
+    gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" --output "$db.sig.new" "$db" &&
+      mv -f "$db.sig.new" "$db.sig"
+  done
+  verify_db_signatures && log "Re-signed the repository with $SIGN_KEY"
+}
+
 case ${1:-once} in
   once) publish_once ;;
   loop) run_loop "$PUBLISH_INTERVAL" ;;
+  resign) resign_all ;;
   *)
-    echo "usage: ${0##*/} [once|loop]" >&2
+    echo "usage: ${0##*/} [once|loop|resign]" >&2
     exit 2
     ;;
 esac

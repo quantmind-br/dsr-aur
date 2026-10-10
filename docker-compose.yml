@@ -39,6 +39,7 @@ services:
     environment:
       REPO_NAME: dsr-aur
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      SIGN_KEY_FPR: ${SIGN_KEY_FPR:-}
       DELETE_GRACE_HOURS: ${DELETE_GRACE_HOURS:-24}
       NOTIFY_URL: ${NOTIFY_URL:-}
       STALE_HOURS: ${STALE_HOURS:-12}
