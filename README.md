@@ -150,6 +150,9 @@ Settings (Dokploy environment):
 |---|---|---|
 | `BUILD_INTERVAL` | `6h` | Time between build cycles (`sleep` syntax) |
 | `BUILD_TIMEOUT` | `8h` | Limit for a single makepkg run |
+| `STEP_TIMEOUT` | `1h` | Limit for every other step run as a build user (`--printsrcinfo`, `updpkgsums`, source download) |
+| `MIN_FREE_GB` | `5` | Skip packages while the cache or work disk has less free space |
+| `HOME_CACHE_MAX_GB` | `5` | Drop a package's tool caches (npm, cargo, go) beyond this size |
 | `BUILDER_CPUS` | `1.5` | CPU limit for the builder |
 | `BUILDER_MEMORY` | `6g` | Memory limit for the builder |
 | `PACKAGER` | `quantmind-br <dsrodrigues20@gmail.com>` | Packager recorded in built packages |

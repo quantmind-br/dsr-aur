@@ -109,7 +109,7 @@ check_versions() {
     keys=(-k "$NVCHECKER_KEYFILE")
   fi
   cat "${configs[@]}" >"$STATE_DIR/nvchecker.toml"
-  raw=$(nvchecker --logger json -c "$STATE_DIR/nvchecker.toml" "${keys[@]}" 2>&1) || true
+  raw=$(timeout 10m nvchecker --logger json -c "$STATE_DIR/nvchecker.toml" "${keys[@]}" 2>&1) || true
   output=$(jq -rR 'fromjson? | select(.name != null and .version != null) | "\(.name) \(.version)"' <<<"$raw")
   errors=$(jq -rR 'fromjson? | select(.name != null and .error != null) | .name' <<<"$raw" | sort -u | paste -sd ' ' -)
   if [[ -z $output && -z $errors ]]; then errors="all (nvchecker returned no versions)"; fi

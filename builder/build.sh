@@ -19,6 +19,8 @@ BUILD_INTERVAL=${BUILD_INTERVAL:-6h}
 BUILD_TIMEOUT=${BUILD_TIMEOUT:-8h}
 KEYSERVER=${KEYSERVER:-hkps://keyserver.ubuntu.com}
 MIN_FREE_GB=${MIN_FREE_GB:-5}
+STEP_TIMEOUT=${STEP_TIMEOUT:-1h}
+HOME_CACHE_MAX_GB=${HOME_CACHE_MAX_GB:-5}
 FORCE=${FORCE:-0}
 export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-1G}
 
@@ -36,7 +38,8 @@ declare -A SOURCE_PATH=() IS_LOCAL=() PUBLISHED=() PUBLISHED_FILE=() UPSTREAM=()
 
 BUILD_USER= # set per package by build_package
 
-as_builder() { runuser -u "$BUILD_USER" -- "$@"; }
+# Every step run as the build user is bounded; the main makepkg run has BUILD_TIMEOUT instead.
+as_builder() { timeout --kill-after=1m "$STEP_TIMEOUT" runuser -u "$BUILD_USER" -- "$@"; }
 
 # Kill everything the build user left behind, so nothing races the root steps that follow.
 stop_build_user() { pkill -KILL -u "$BUILD_USER" 2>/dev/null || true; }
@@ -100,6 +103,10 @@ prepare() {
   install -d -o root -g root -m 755 "$WORK_DIR" "$WORK_DIR/sources" "$WORK_DIR/out" \
     "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache" "$CACHE_DIR/home"
   install -d "$INCOMING_DIR"
+  # Batches a killed cycle never finished handing over.
+  find "$INCOMING_DIR" -mindepth 1 -maxdepth 1 -name '.*' -mmin +1440 -exec rm -rf {} +
+  # Under the cycle lock no pacman can be running: a lock file is left over from a kill.
+  rm -f /var/lib/pacman/db.lck
   [[ -f /etc/pacman.conf.orig ]] || cp /etc/pacman.conf /etc/pacman.conf.orig
   cp /etc/pacman.conf.orig /etc/pacman.conf
   rm -rf /var/cache/pacman/pkg/*
@@ -402,6 +409,11 @@ build_package() {
   cp -r "${SOURCE_PATH[$name]}" "$dir" || return 1
   rm -rf "$dir/src" "$dir/pkg" "$dir"/*.pkg.tar.*
   chown -R "$BUILD_USER:$BUILD_USER" "$dir" && chmod 700 "$dir" || return 1
+  # Tool caches in the home (npm, cargo, go) are dropped when they outgrow their share.
+  if [[ -d $CACHE_DIR/home/$name ]] &&
+    (( $(du -s --block-size=1G "$CACHE_DIR/home/$name" | cut -f 1) > HOME_CACHE_MAX_GB )); then
+    rm -rf "${CACHE_DIR:?}/home/${name:?}"
+  fi
   own_dir "$PKGDEST" "$SRCDEST" "$CCACHE_DIR" "$CACHE_DIR/home/$name" || return 1
   cd "$dir" || return 1
 
@@ -465,6 +477,11 @@ build_all() {
     progress=0
     for name in "${pending[@]}"; do
       heartbeat
+      if ! enough_disk; then
+        FAILED+=("$name")
+        PRUNE=0
+        continue
+      fi
       rc=0
       (build_package "$name") || rc=$?
       case $rc in
@@ -555,12 +572,7 @@ build_once() {
   collect_sources || exit 1
   register_repos
   PHASE=build
-  if enough_disk; then
-    build_all
-  else
-    FAILED+=("${SOURCES[@]}")
-    PRUNE=0
-  fi
+  build_all
   # Without srcinfo for every source the publisher cannot tell what to keep.
   for name in "${SOURCES[@]}"; do
     [[ -f $PRIVATE_DIR/known/$name ]] || PRUNE=0
