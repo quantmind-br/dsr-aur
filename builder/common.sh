@@ -101,3 +101,11 @@ package_file_is_valid() {
   [[ $base == "$name-$version-$arch.pkg.tar."* ]] || return 1
   printf '%s\n' "$base"
 }
+
+# Print "filename sha256" for each package in the database (empty when it has none).
+db_checksums() {
+  [[ -e $DB ]] || return 0
+  tar -xOf "$DB" --wildcards '*/desc' 2>/dev/null | awk '
+    $0 == "%FILENAME%" { getline file; next }
+    $0 == "%SHA256SUM%" { getline sum; if (file != "") print file, sum; file = ""; next }'
+}

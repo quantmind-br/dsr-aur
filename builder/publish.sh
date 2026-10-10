@@ -450,6 +450,7 @@ publish_once() {
     resolve publish-error "dsr-aur: publishing recovered" "Pending batches were published."
   fi
   cleanup_unreferenced
+  audit_repository
 
   # The builder touches its heartbeat at least every BUILD_TIMEOUT or BUILD_INTERVAL.
   if builder_silent; then
@@ -460,9 +461,10 @@ publish_once() {
   flush_alerts
 }
 
-# Re-sign every published package and both databases with the active key (key rotation).
+# Re-sign every package file (published or within the deletion grace period) and both
+# databases with the active key (key rotation). Fails unless every signature verifies.
 resign_all() {
-  local listing file db
+  local listing file count=0 failures=0
   trap '' TERM INT
   check_tools
   exec 9>"$STATE_DIR/publish.lock"
@@ -470,16 +472,53 @@ resign_all() {
   setup_signing
   listing=$(db_versions) || { warn "Cannot read the database"; exit 1; }
   while read -r _ _ file; do
-    [[ -n $file && -f $REPO_DIR/$file ]] || continue
-    gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" \
-      --output "$REPO_DIR/.$file.sig" "$REPO_DIR/$file" && mv -f "$REPO_DIR/.$file.sig" "$REPO_DIR/$file.sig"
+    if [[ -n $file && ! -f $REPO_DIR/$file ]]; then
+      warn "$file is listed but missing"
+      failures=$((failures + 1))
+    fi
   done <<<"$listing"
-  for db in "$DB" "$FILES_DB"; do
-    [[ -e $db ]] || continue
-    gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" --output "$db.sig.new" "$db" &&
-      mv -f "$db.sig.new" "$db.sig"
+  for file in "$REPO_DIR"/*.pkg.tar.zst "$REPO_DIR"/*.pkg.tar.xz; do
+    [[ -f $file && ! -L $file ]] || continue
+    if gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" --output "$file.sig.new" "$file" &&
+      mv -f "$file.sig.new" "$file.sig" && signed_by_active "$file" "$file.sig"; then
+      count=$((count + 1))
+    else
+      warn "Could not re-sign ${file##*/}"
+      failures=$((failures + 1))
+    fi
   done
-  verify_db_signatures && log "Re-signed the repository with $SIGN_KEY"
+  verify_db_signatures || failures=$((failures + 1))
+  if (( failures )); then
+    warn "$failures problem(s) left; the repository is not fully signed by $SIGN_KEY"
+    exit 1
+  fi
+  log "Re-signed $count package(s) and both databases with $SIGN_KEY"
+}
+
+# Once a day, check that every package the database lists is on disk, matches the checksum
+# the database records, and carries a signature by the active key.
+audit_repository() {
+  local stamp=$STATE_DIR/audited file sum
+  local -a problems=()
+  if [[ -f $stamp && -z $(find "$stamp" -mmin +1440) ]]; then return 0; fi
+  db_versions >/dev/null || return 0
+  while read -r file sum; do
+    [[ -n $file ]] || continue
+    if [[ ! -f $REPO_DIR/$file ]]; then
+      problems+=("$file (missing)")
+    elif [[ $(sha256sum "$REPO_DIR/$file" | cut -d ' ' -f 1) != "$sum" ]]; then
+      problems+=("$file (checksum differs from the database)")
+    elif ! signed_by_active "$REPO_DIR/$file" "$REPO_DIR/$file.sig"; then
+      problems+=("$file (signature missing, invalid or by another key)")
+    fi
+  done < <(db_checksums)
+  touch "$stamp"
+  if (( ${#problems[@]} )); then
+    warn "Repository audit: ${problems[*]}"
+    alert integrity "dsr-aur: repository audit failed" "$(printf '%s\n' "${problems[@]}")"
+  else
+    resolve integrity "dsr-aur: repository audit clean" "Every published package is present, intact and signed."
+  fi
 }
 
 case ${1:-once} in
