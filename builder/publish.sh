@@ -65,8 +65,12 @@ alert() {
 resolve() {
   local dir=$STATE_DIR/alerts
   [[ -f $dir/$1.msg ]] || return 0
-  # Announce the recovery only when the problem itself was announced.
-  if [[ -f $dir/$1.sent ]]; then printf '%s\n%s' "$2" "$3" >"$dir/$1.clear"; fi
+  if [[ -f $dir/$1.sent ]]; then
+    printf '%s\n%s' "$2" "$3" >"$dir/$1.clear"
+  else
+    # Never delivered: report the problem together with its recovery instead of dropping it.
+    printf '%s\n%s\nWhile notifications were failing: %s' "$2" "$3" "$(tail -n +2 "$dir/$1.msg")" >"$dir/$1.clear"
+  fi
   rm -f "$dir/$1.msg" "$dir/$1.sent"
 }
 
