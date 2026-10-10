@@ -5,9 +5,10 @@
 # key and the optional GitHub token.
 #
 # Usage: dsr-publish [once|loop|resign]
-#   once    publish pending batches, refresh upstream versions when due, then exit
-#   loop    run "once" now and again every $PUBLISH_INTERVAL
-#   resign  re-sign all published files with the active key (after a key rotation)
+#   once      publish pending batches, refresh upstream versions when due, then exit
+#   loop      run "once" now and again every $PUBLISH_INTERVAL
+#   resign    re-sign all published files with the active key (after a key rotation)
+#   versions  resolve upstream versions now and print them (used by local test builds)
 set -euo pipefail
 # shellcheck source=common.sh source-path=SCRIPTDIR
 source "$(dirname "$(readlink -f "$0")")/common.sh"
@@ -447,8 +448,15 @@ case ${1:-once} in
   once) publish_once ;;
   loop) run_loop "$PUBLISH_INTERVAL" ;;
   resign) resign_all ;;
+  versions)
+    check_tools
+    install -d "$STATE_DIR" "$CONTROL_DIR"
+    rm -f "$STATE_DIR/versions-checked"
+    check_versions
+    cat "$VERSIONS_FILE"
+    ;;
   *)
-    echo "usage: ${0##*/} [once|loop|resign]" >&2
+    echo "usage: ${0##*/} [once|loop|resign|versions]" >&2
     exit 2
     ;;
 esac
