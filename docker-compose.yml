@@ -39,6 +39,8 @@ services:
       REPO_NAME: dsr-aur
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       DELETE_GRACE_HOURS: ${DELETE_GRACE_HOURS:-24}
+      NOTIFY_URL: ${NOTIFY_URL:-}
+      STALE_HOURS: ${STALE_HOURS:-12}
     volumes:
       - repo:/srv/repo
       - exchange:/srv/exchange

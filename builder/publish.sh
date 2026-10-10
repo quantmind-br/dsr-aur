@@ -16,6 +16,8 @@ PUBLISH_INTERVAL=${PUBLISH_INTERVAL:-1m}
 VERSION_CHECK_MINUTES=${VERSION_CHECK_MINUTES:-60}
 DELETE_GRACE_HOURS=${DELETE_GRACE_HOURS:-24}
 ALLOW_EMPTY_PRUNE=${ALLOW_EMPTY_PRUNE:-0}
+NOTIFY_URL=${NOTIFY_URL:-}
+STALE_HOURS=${STALE_HOURS:-12}
 
 FILES_DB=$REPO_DIR/$REPO_NAME.files.tar.gz
 SIGN_GNUPGHOME=$STATE_DIR/gnupg
@@ -23,6 +25,30 @@ NVCHECKER_KEYFILE=$STATE_DIR/nvchecker-keys.toml
 SIGN_KEY=
 
 gpg_sign() { GNUPGHOME=$SIGN_GNUPGHOME gpg --batch --pinentry-mode loopback "$@"; }
+
+# POST a message to an ntfy topic URL (title and priority as ntfy headers).
+send_notification() {
+  [[ -n $NOTIFY_URL ]] || return 0
+  curl -fsS --max-time 20 -H "Title: $1" -H "Priority: $3" -H "Tags: package" \
+    --data-binary "$2" "$NOTIFY_URL" >/dev/null || { warn "Could not send a notification"; return 1; }
+}
+
+# Notify once per distinct problem, again after a day if it persists, and once when it clears.
+alert() {
+  local file=$STATE_DIR/alerts/$1
+  [[ -n $NOTIFY_URL ]] || return 0
+  if [[ -f $file && $(<"$file") == "$3" && -z $(find "$file" -mmin +1440) ]]; then
+    return 0
+  fi
+  install -d "$STATE_DIR/alerts"
+  send_notification "$2" "$3" high && printf '%s' "$3" >"$file"
+}
+
+resolve() {
+  local file=$STATE_DIR/alerts/$1
+  [[ -f $file ]] || return 0
+  send_notification "$2" "$3" low && rm -f "$file"
+}
 
 setup_signing() {
   install -d -m 700 "$SIGN_GNUPGHOME"
@@ -159,7 +185,7 @@ write_status() {
 
 process_batch() {
   local dir=$1 id=${1##*/} key value file base prune=no
-  local -a known=() added=()
+  local -a known=() added=() failed=() rejected=()
   local -A referenced=()
   if [[ ! -f $dir/manifest ]]; then
     warn "Batch $id has no manifest; discarding it"
@@ -170,7 +196,8 @@ process_batch() {
     case $key in
       prune) if [[ $value == yes ]]; then prune=yes; fi ;;
       known) if [[ $value =~ $NAME_RE ]]; then known+=("$value"); fi ;;
-      started | finished | built | failed) ;;
+      failed) failed+=("$value") ;;
+      started | finished | built) ;;
       *) warn "Batch $id: unknown manifest entry '$key'" ;;
     esac
   done <"$dir/manifest"
@@ -182,6 +209,7 @@ process_batch() {
     [[ -e $file ]] || continue
     if ! base=$(validate_package "$file"); then
       warn "Batch $id: rejecting ${file##*/} (not a valid package)"
+      rejected+=("${file##*/}")
       continue
     fi
     # Published file names are immutable: clients and Cloudflare may have cached them.
@@ -201,6 +229,12 @@ process_batch() {
     prune_packages "${known[@]}" || return 1
   fi
   write_status "$dir/manifest"
+  if (( ${#failed[@]} + ${#rejected[@]} )); then
+    alert build-failures "dsr-aur: build failures" \
+      "Failed: ${failed[*]:-none}"$'\n'"Rejected: ${rejected[*]:-none}"$'\n'"https://aur.quantforge.com.br/status.json"
+  else
+    resolve build-failures "dsr-aur: builds recovered" "Every package built in the last cycle."
+  fi
   rm -rf "$dir"
 }
 
@@ -240,7 +274,7 @@ cleanup_unreferenced() {
 }
 
 publish_once() {
-  local dir
+  local dir failed
   trap '' TERM INT # finish the cycle; the loop waits for it
   check_tools
   install -d "$STATE_DIR" "$REPO_DIR" "$INCOMING_DIR"
@@ -249,11 +283,29 @@ publish_once() {
 
   setup_signing
   check_versions || warn "Upstream version check failed"
+  failed=0
   for dir in "$INCOMING_DIR"/*/; do
     [[ -d $dir ]] || continue
-    process_batch "${dir%/}" || warn "Batch ${dir%/} failed; retrying next cycle"
+    if ! process_batch "${dir%/}"; then
+      warn "Batch ${dir%/} failed; retrying next cycle"
+      failed=1
+    fi
   done
+  if (( failed )); then
+    alert publish-error "dsr-aur: publishing failed" "A batch could not be published; see the dsr-publish logs."
+  else
+    resolve publish-error "dsr-aur: publishing recovered" "Pending batches were published."
+  fi
   cleanup_unreferenced
+
+  # Dead man's switch: the builder touches its heartbeat at least every BUILD_TIMEOUT or
+  # BUILD_INTERVAL, whichever is longer.
+  [[ -f $EXCHANGE_DIR/heartbeat ]] || touch "$EXCHANGE_DIR/heartbeat"
+  if [[ -n $(find "$EXCHANGE_DIR/heartbeat" -mmin +$((STALE_HOURS * 60))) ]]; then
+    alert stale "dsr-aur: builder silent" "No builder activity for over ${STALE_HOURS}h: it is stuck, crashed or out of disk."
+  else
+    resolve stale "dsr-aur: builder back" "Build batches are arriving again."
+  fi
 }
 
 case ${1:-once} in

@@ -97,6 +97,10 @@ Publisher safeguards:
   empty the repository unless `ALLOW_EMPTY_PRUNE=1`.
 - Files the database no longer lists are deleted after `DELETE_GRACE_HOURS`,
   so clients holding a slightly older database can still download them.
+- With `NOTIFY_URL` (an [ntfy](https://ntfy.sh) topic URL) it notifies build
+  failures, rejected packages and publishing errors once per distinct
+  problem (again after a day), and when they clear. A dead man's switch alerts
+  when the builder's heartbeat is older than `STALE_HOURS`.
 
 `https://aur.quantforge.com.br/status.json` shows the last cycle: what was
 built, what failed, the package count and the signing key.
@@ -149,4 +153,6 @@ Settings (Dokploy environment):
 | `PACKAGER` | `quantmind-br <dsrodrigues20@gmail.com>` | Packager recorded in built packages |
 | `GITHUB_TOKEN` | unset | Publisher only: token for nvchecker (lifts the 60 requests/hour limit; required by `include_prereleases` with `use_latest_release`) |
 | `DELETE_GRACE_HOURS` | `24` | How long unreferenced package files stay downloadable |
+| `NOTIFY_URL` | unset | Publisher: ntfy topic URL for alerts |
+| `STALE_HOURS` | `12` | Publisher: alert when the builder's heartbeat is older than this |
 | `ALLOW_UNPINNED_AUR` | `0` | Builder: accept `aur.txt` entries without `@commit` |

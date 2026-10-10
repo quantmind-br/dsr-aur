@@ -38,6 +38,9 @@ as_builder() { runuser -u "$BUILD_USER" -- "$@"; }
 # Kill everything the build user left behind, so nothing races the root steps that follow.
 stop_build_user() { pkill -KILL -u "$BUILD_USER" 2>/dev/null || true; }
 
+# Tell the publisher the builder is alive (its dead man's switch watches this file).
+heartbeat() { touch "$EXCHANGE_DIR/heartbeat"; }
+
 stop_all_build_users() {
   local users
   users=$(awk -F: '$1 ~ /^dsrb[0-9]+$/ { print $1 }' /etc/passwd | paste -sd, -)
@@ -435,6 +438,7 @@ build_all() {
     next=()
     progress=0
     for name in "${pending[@]}"; do
+      heartbeat
       rc=0
       (build_package "$name") || rc=$?
       case $rc in
@@ -500,6 +504,7 @@ build_once() {
   flock 9
 
   prepare
+  heartbeat
   setup_system
   load_published || exit 1
   load_versions
@@ -517,6 +522,7 @@ build_once() {
   done
   trim_caches
   write_batch "$started"
+  heartbeat
   stop_all_build_users
   rm -rf "$WORK_DIR"
 
