@@ -43,6 +43,14 @@ as_builder() { runuser -u "$BUILD_USER" -- "$@"; }
 # The signing key lives in a root-only keyring that PKGBUILD code cannot read.
 gpg_sign() { GNUPGHOME=$SIGN_GNUPGHOME gpg --batch --pinentry-mode loopback "$@"; }
 
+# A broken CPU emulator makes tools crash, which the script would misread as "no match".
+check_tools() {
+  if ! { echo ok | grep -q ok && echo ok | sed -n /ok/p | awk '/ok/ { found = 1 } END { exit !found }'; }; then
+    warn "Core tools crash on this host (broken CPU emulation?); aborting"
+    exit 1
+  fi
+}
+
 setup_system() {
   log "Updating build system"
   pacman -Sy --noconfirm --needed archlinux-keyring
@@ -312,6 +320,7 @@ build_once() {
   exec 9>"$STATE_DIR/build.lock"
   flock 9
 
+  check_tools
   setup_system
   setup_signing
   setup_nvchecker

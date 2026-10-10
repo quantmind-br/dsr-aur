@@ -61,8 +61,12 @@ Push to `main`. Dokploy redeploys the stack, and the builder builds on startup.
   terminates TLS for `aur.quantforge.com.br`.
 
 The VPS is ARM64, so the builder runs as `linux/amd64` through QEMU user-mode
-emulation (`qemu-user-static` and `binfmt-support` on the host). Repackaging
-`-bin` packages is quick; compiling is several times slower than native.
+emulation. Repackaging `-bin` packages is quick; compiling is several times
+slower than native. Ubuntu 24.04's QEMU 8.2 crashes `grep` under current
+glibc, so the host registers QEMU 10.2.3 (static binary taken from
+`tonistiigi/binfmt`) at `/usr/local/lib/qemu-binfmt/qemu-x86_64` through
+`/etc/binfmt.d/qemu-x86_64.conf`. The builder aborts a cycle when core tools
+crash.
 
 Compiled packages target the Zen 5 desktop with `-march=x86-64-v3
 -mtune=znver5` (Rust `target-cpu=x86-64-v3`, `GOAMD64=v3`), set in
