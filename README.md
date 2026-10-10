@@ -9,7 +9,7 @@ Trust the signing key:
 
 ```bash
 curl -fsSL https://aur.quantforge.com.br/dsr-aur.asc | sudo pacman-key --add -
-sudo pacman-key --lsign-key <FINGERPRINT>
+sudo pacman-key --lsign-key 527847CE99A97C4EEB1CA5394250FF48D2374AED
 ```
 
 Add to `/etc/pacman.conf`:
