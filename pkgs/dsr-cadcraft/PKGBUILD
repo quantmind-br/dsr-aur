@@ -1,0 +1,43 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+pkgname=dsr-cadcraft
+_name=cadcraft
+pkgver=0.4.0
+pkgrel=1
+pkgdesc='Clean-room AutoCAD-style CAD and drafting app in Rust (built from source)'
+arch=('x86_64')
+url='https://github.com/storytold/cadcraft'
+license=('Apache-2.0' 'MIT')
+# eframe/wgpu/winit load the windowing and GPU libraries at run time (dlopen).
+depends=('glibc' 'libgcc' 'hicolor-icon-theme' 'libxkbcommon' 'wayland' 'vulkan-icd-loader' 'libglvnd')
+makedepends=('cargo')
+optdepends=('libx11: X11 fallback'
+            'libxcursor: X11 fallback'
+            'libxi: X11 fallback'
+            'libxrandr: X11 fallback'
+            'xdg-desktop-portal: file open and save dialogs')
+provides=("$_name=${epoch:+$epoch:}$pkgver")
+conflicts=("$_name" "$_name-bin" "$_name-git" 'dsr-cadcraft-bin')
+source=("$_name-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('111157064cd5f267b858d7bbc545d5bd96d5abc630583aec6367e599b34dfeff')
+
+prepare() {
+  cd "$_name-$pkgver"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_name-$pkgver"
+  CARGO_TARGET_DIR=target cargo build --frozen --release -p cadcraft -p cadcraft-cli
+}
+
+package() {
+  cd "$_name-$pkgver"
+  install -Dm755 "target/release/$_name" "target/release/$_name-cli" -t "$pkgdir/usr/bin"
+  install -Dm644 "packaging/linux/ai.storyteller.$_name.desktop" -t "$pkgdir/usr/share/applications"
+  install -Dm644 "packaging/linux/ai.storyteller.$_name.mime.xml" "$pkgdir/usr/share/mime/packages/ai.storyteller.$_name.xml"
+  local icon
+  for icon in assets/app-icon/hicolor/*/apps/"ai.storyteller.$_name.png"; do
+    install -Dm644 "$icon" "$pkgdir/usr/share/icons/${icon#assets/app-icon/}"
+  done
+  install -Dm644 LICENSE-APACHE LICENSE-MIT -t "$pkgdir/usr/share/licenses/$pkgname"
+}
