@@ -34,21 +34,42 @@ send_notification() {
     --data-binary "$2" "$NOTIFY_URL" >/dev/null || { warn "Could not send a notification"; return 1; }
 }
 
-# Notify once per distinct problem, again after a day if it persists, and once when it clears.
+# Alerts are recorded first and delivered by flush_alerts, so a failed delivery is retried
+# every cycle instead of being lost with the batch that raised it. In $STATE_DIR/alerts:
+#   <key>.msg    current problem (title on the first line); re-sent daily while it lasts
+#   <key>.sent   the problem was delivered
+#   <key>.clear  recovery notice waiting for delivery
 alert() {
-  local file=$STATE_DIR/alerts/$1
+  local dir=$STATE_DIR/alerts content=$2$'\n'$3
   [[ -n $NOTIFY_URL ]] || return 0
-  if [[ -f $file && $(<"$file") == "$3" && -z $(find "$file" -mmin +1440) ]]; then
-    return 0
+  install -d "$dir"
+  rm -f "$dir/$1.clear"
+  if [[ ! -f $dir/$1.msg || $(<"$dir/$1.msg") != "$content" ]]; then
+    printf '%s' "$content" >"$dir/$1.msg"
+    rm -f "$dir/$1.sent"
   fi
-  install -d "$STATE_DIR/alerts"
-  send_notification "$2" "$3" high && printf '%s' "$3" >"$file"
 }
 
 resolve() {
-  local file=$STATE_DIR/alerts/$1
-  [[ -f $file ]] || return 0
-  send_notification "$2" "$3" low && rm -f "$file"
+  local dir=$STATE_DIR/alerts
+  [[ -f $dir/$1.msg ]] || return 0
+  # Announce the recovery only when the problem itself was announced.
+  if [[ -f $dir/$1.sent ]]; then printf '%s\n%s' "$2" "$3" >"$dir/$1.clear"; fi
+  rm -f "$dir/$1.msg" "$dir/$1.sent"
+}
+
+flush_alerts() {
+  local dir=$STATE_DIR/alerts file
+  [[ -n $NOTIFY_URL && -d $dir ]] || return 0
+  for file in "$dir"/*.msg; do
+    [[ -f $file ]] || continue
+    if [[ -f ${file%.msg}.sent && -z $(find "${file%.msg}.sent" -mmin +1440) ]]; then continue; fi
+    send_notification "$(head -n 1 "$file")" "$(tail -n +2 "$file")" high && touch "${file%.msg}.sent"
+  done
+  for file in "$dir"/*.clear; do
+    [[ -f $file ]] || continue
+    send_notification "$(head -n 1 "$file")" "$(tail -n +2 "$file")" low && rm -f "$file"
+  done
 }
 
 setup_signing() {
@@ -251,7 +272,7 @@ process_batch() {
   if [[ $prune == yes ]]; then
     prune_packages "${known[@]}" || return 1
   fi
-  write_status "$dir/manifest"
+  write_status "$dir/manifest" || warn "Could not write status.json"
   if (( ${#failed[@]} + ${#rejected[@]} )); then
     alert build-failures "dsr-aur: build failures" \
       "Failed: ${failed[*]:-none}"$'\n'"Rejected: ${rejected[*]:-none}"$'\n'"https://aur.quantforge.com.br/status.json"
@@ -352,6 +373,7 @@ publish_once() {
   else
     resolve stale "dsr-aur: builder back" "Build batches are arriving again."
   fi
+  flush_alerts
 }
 
 case ${1:-once} in
