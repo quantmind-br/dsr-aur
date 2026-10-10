@@ -26,6 +26,8 @@ SIGN_GNUPGHOME=$STATE_DIR/gnupg
 NVCHECKER_KEYFILE=$STATE_DIR/nvchecker-keys.toml
 RECEIVE_DIR=${RECEIVE_DIR:-/var/tmp/dsr-publish}
 SIGN_KEY=
+RUN_FAILED=()   # failures across every batch published in this run
+RUN_REJECTED=()
 
 gpg_sign() { GNUPGHOME=$SIGN_GNUPGHOME gpg --batch --pinentry-mode loopback "$@"; }
 
@@ -306,12 +308,8 @@ process_batch() {
     prune_packages "${known[@]}" || return 1
   fi
   write_status "$dir/manifest" || warn "Could not write status.json"
-  if (( ${#failed[@]} + ${#rejected[@]} )); then
-    alert build-failures "dsr-aur: build failures" \
-      "Failed: ${failed[*]:-none}"$'\n'"Rejected: ${rejected[*]:-none}"$'\n'"https://aur.quantforge.com.br/status.json"
-  else
-    resolve build-failures "dsr-aur: builds recovered" "Every package built in the last cycle."
-  fi
+  RUN_FAILED+=("${failed[@]}")
+  RUN_REJECTED+=("${rejected[@]}")
 }
 
 # Dead man's switch: true when the builder's heartbeat (or its absence) is older than STALE_HOURS.
@@ -369,7 +367,7 @@ cleanup_unreferenced() {
 }
 
 publish_once() {
-  local entry failed rc
+  local entry failed processed rc
   trap '' TERM INT # finish the cycle; the loop waits for it
   check_tools
   install -d "$STATE_DIR" "$REPO_DIR" "$CONTROL_DIR"
@@ -379,6 +377,7 @@ publish_once() {
   setup_signing
   check_versions || warn "Upstream version check failed"
   failed=0
+  processed=0
   if [[ -d $INCOMING_DIR && ! -L $INCOMING_DIR ]]; then
     for entry in "$INCOMING_DIR"/*; do
       [[ -d $entry && ! -L $entry ]] || continue
@@ -390,6 +389,7 @@ publish_once() {
       fi
       if (( rc == 0 || rc == 3 )); then
         rm -rf -- "$entry"
+        processed=1
       else
         # Later batches wait: applied after it, this older batch would undo their changes.
         warn "Batch ${entry##*/} failed; retrying it, and holding later batches, next cycle"
@@ -399,6 +399,12 @@ publish_once() {
     done
   fi
   rm -rf "$RECEIVE_DIR"
+  if (( ${#RUN_FAILED[@]} + ${#RUN_REJECTED[@]} )); then
+    alert build-failures "dsr-aur: build failures" \
+      "Failed: ${RUN_FAILED[*]:-none}"$'\n'"Rejected: ${RUN_REJECTED[*]:-none}"$'\n'"https://aur.quantforge.com.br/status.json"
+  elif (( processed )); then
+    resolve build-failures "dsr-aur: builds recovered" "Every package built in the last cycle."
+  fi
   # repo-add only warns when signing fails, and a failed check must not wait for the next
   # package to be retried.
   if ! verify_db_signatures; then
