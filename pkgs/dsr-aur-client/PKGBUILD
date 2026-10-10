@@ -1,18 +1,19 @@
 # Maintainer: quantmind-br <dsrodrigues20@gmail.com>
 pkgname=dsr-aur-client
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc='Checks dsr-aur packages after pacman transactions and requests rebuilds'
 arch=('any')
 url='https://aur.quantforge.com.br'
 license=('MIT')
-depends=('bash' 'binutils' 'curl' 'glibc' 'libnotify' 'openssh' 'pacman')
+depends=('bash' 'binutils' 'curl' 'github-cli' 'glibc' 'libnotify' 'pacman')
+optdepends=('openssh: request rebuilds from the fallback VPS builder (REBUILD_VIA=ssh)')
 install=dsr-aur-client.install
 source=('dsr-aur-check'
         'dsr-aur-check.hook'
         'dsr-aur-check.path'
         'dsr-aur-check.service')
-sha256sums=('4ddc06788593279036349b25163c9f1b57f4e78860814208015592bcb5db31a2'
+sha256sums=('3a4fb7c2a796c0c7056658f715d957752088acaae8db52689c7201e24457151b'
             '9ff5354ac2e03f8d3709816997f453082a21facd398cef5a12f81358232c5437'
             'bcc7ea61c563fd618769342fdd02e7ff7036f13aa43922fc3e2c2c4493397bce'
             '613c4d57455767b153acdddb1630f9ad89124137c32e6e3e4349744b94e4a07c')

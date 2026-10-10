@@ -5,11 +5,16 @@
 #
 # Settings in ~/.config/dsr-aur-check.conf (shell syntax):
 #   NOTIFY_URL=https://ntfy.sh/<topic>   also send alerts to this ntfy topic
-#   BUILDER_SSH=quantforge               SSH host of the builder; empty: never request rebuilds
-#   BUILDER_CONTAINER=<name>             builder container on that host
+#   REBUILD_VIA=github                   github: run the CI build workflow with gh (default);
+#                                        ssh: docker exec on BUILDER_SSH; none: only notify
+#   GITHUB_REPO=quantmind-br/dsr-aur     repository whose build workflow gh runs
+#   BUILDER_SSH=quantforge               ssh: host of the fallback builder
+#   BUILDER_CONTAINER=<name>             ssh: builder container on that host
 set -uo pipefail
 
 NOTIFY_URL=
+REBUILD_VIA=github
+GITHUB_REPO=quantmind-br/dsr-aur
 BUILDER_SSH=quantforge
 BUILDER_CONTAINER=compose-quantify-neural-alarm-8a391p-builder-1
 config=${XDG_CONFIG_HOME:-$HOME/.config}/dsr-aur-check.conf
@@ -80,6 +85,16 @@ send() {
   return 0
 }
 
+# Ask the builder to rebuild the given packages (space-separated) right away.
+request_rebuild() {
+  case $REBUILD_VIA in
+    github) gh workflow run build.yml -R "$GITHUB_REPO" -f "rebuild=$1" >/dev/null 2>&1 ;;
+    ssh) ssh -o BatchMode=yes -o ConnectTimeout=10 "$BUILDER_SSH" \
+      docker exec -d -e "REBUILD=$1" "$BUILDER_CONTAINER" dsr-build once ;;
+    *) return 1 ;;
+  esac
+}
+
 mapfile -t packages < <(pacman -Qq | grep '^dsr-')
 problems=$(for pkg in "${packages[@]}"; do package_problems "$pkg"; done)
 # Baselines of versions no longer installed are dropped.
@@ -100,12 +115,9 @@ fi
 broken=$(cut -d : -f 1 <<<"$problems" | sort -u | paste -sd ' ' -)
 echo "$problems"
 send critical "dsr-aur: broken packages" "$problems"
-if [[ -n $BUILDER_SSH ]]; then
-  if ssh -o BatchMode=yes -o ConnectTimeout=10 "$BUILDER_SSH" \
-    docker exec -d -e "REBUILD=$broken" "$BUILDER_CONTAINER" dsr-build once; then
-    send normal "dsr-aur: rebuild requested" "The builder will rebuild: $broken"
-  else
-    send normal "dsr-aur: rebuild not requested" "Could not reach $BUILDER_SSH; the builder will catch up on its own schedule."
-  fi
+if request_rebuild "$broken"; then
+  send normal "dsr-aur: rebuild requested" "The builder will rebuild: $broken"
+elif [[ $REBUILD_VIA != none ]]; then
+  send normal "dsr-aur: rebuild not requested" "Could not reach the builder ($REBUILD_VIA); it catches up on its own schedule."
 fi
 exit 1
