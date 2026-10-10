@@ -133,7 +133,8 @@ verify_db_signatures() {
 validate_package() {
   local file=$1 base=${1##*/} info name version arch
   [[ $base =~ $PKG_FILE_RE && -f $file && ! -L $file ]] || return 1
-  info=$(bsdtar -xOf "$file" .PKGINFO 2>/dev/null) || return 1
+  info=$(bsdtar -xOqf "$file" .PKGINFO 2>/dev/null) || return 1
+  pkginfo_is_safe "$info" || return 1
   name=$(sed -n 's/^pkgname = //p' <<<"$info")
   version=$(sed -n 's/^pkgver = //p' <<<"$info")
   arch=$(sed -n 's/^arch = //p' <<<"$info")

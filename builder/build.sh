@@ -336,6 +336,10 @@ collect_outputs() {
       warn "$base is not a regular package file"
       return 1
     fi
+    if ! pkginfo_is_safe "$(bsdtar -xOqf "$file" .PKGINFO 2>/dev/null)"; then
+      warn "$base has a .PKGINFO that repo-add cannot read safely"
+      return 1
+    fi
     install -m 644 "$file" "$PRIVATE_DIR/out/$base" || return 1
     added+=("$PRIVATE_DIR/out/$base")
   done <<<"$list"
