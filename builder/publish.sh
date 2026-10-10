@@ -338,7 +338,8 @@ process_batch() {
     repo_db repo-add --prevent-downgrade "$DB" "${added[@]}" || return 1
     verify_db_signatures || return 1
   fi
-  if [[ $prune == yes ]]; then
+  # A rejected package may be the replacement of what pruning would remove.
+  if [[ $prune == yes ]] && (( ${#failed[@]} + ${#rejected[@]} == 0 )); then
     prune_packages "${known[@]}" || return 1
   fi
   write_status "$dir/manifest" || warn "Could not write status.json"
