@@ -29,7 +29,7 @@ DEP_RE='^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*((<|>|<=|>=|=)[A-Za-z0-9._+:~-]+)?$'
 SOURCES=()
 FAILED=()
 PRUNE=1
-declare -A SOURCE_PATH=() IS_LOCAL=() PUBLISHED=() UPSTREAM=()
+declare -A SOURCE_PATH=() IS_LOCAL=() PUBLISHED=() PUBLISHED_FILE=() UPSTREAM=()
 
 BUILD_USER= # set per package by build_package
 
@@ -127,7 +127,10 @@ load_published() {
     return 1
   fi
   while read -r name version file; do
-    if [[ -n $name ]]; then PUBLISHED[$name]=$version; fi
+    if [[ -n $name ]]; then
+      PUBLISHED[$name]=$version
+      PUBLISHED_FILE[$name]=$file
+    fi
   done <<<"$listing"
 }
 
@@ -214,13 +217,14 @@ full_version() {
 
 is_vcs() { grep -Eq '^[[:space:]]*(function[[:space:]]+)?pkgver[[:space:]]*\(\)' PKGBUILD; }
 
-# Published means the database already holds every pkgname at this version or newer.
+# Published means the database holds every pkgname at this version or newer, and the file it
+# lists is on disk (a lost file is rebuilt and the publisher restores it).
 is_published() {
   local version pkg
   [[ $FORCE == 1 ]] && return 1
   version=$(full_version "$1")
   while read -r pkg; do
-    [[ -n ${PUBLISHED[$pkg]:-} ]] || return 1
+    [[ -n ${PUBLISHED[$pkg]:-} && -f $REPO_DIR/${PUBLISHED_FILE[$pkg]} ]] || return 1
     (( $(vercmp "${PUBLISHED[$pkg]}" "$version") >= 0 )) || return 1
   done < <(srcinfo_pkgnames "$1")
 }

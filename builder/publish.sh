@@ -224,12 +224,23 @@ process_batch() {
       rejected+=("${file##*/}")
       continue
     fi
-    # Published file names are immutable: clients and Cloudflare may have cached them.
-    if [[ -n ${referenced[$base]:-} ]]; then
-      warn "$base is already published; bump pkgrel to ship a rebuild"
-      continue
+    # File names are immutable while the file exists (published or within the deletion grace
+    # period): clients and Cloudflare may have cached it. Identical bytes are fine; a file the
+    # database lists but the disk lost is restored.
+    if [[ -e $REPO_DIR/$base || -L $REPO_DIR/$base ]]; then
+      if ! cmp -s -- "$file" "$REPO_DIR/$base"; then
+        warn "$base already exists with different content; bump pkgrel to ship a rebuild"
+        rejected+=("$base")
+        continue
+      fi
+      if [[ ! -f $REPO_DIR/$base.sig ]]; then
+        gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" \
+          --output "$REPO_DIR/$base.sig" "$REPO_DIR/$base" || return 1
+      fi
+      [[ -n ${referenced[$base]:-} ]] && continue
+    else
+      stage_package "$file" "$base" || { warn "Could not stage $base"; return 1; }
     fi
-    stage_package "$file" "$base" || { warn "Could not stage $base"; return 1; }
     added+=("$REPO_DIR/$base")
   done
   if (( ${#added[@]} )); then
