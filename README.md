@@ -24,8 +24,9 @@ Then `sudo pacman -Syu <package>` (never `-Sy` alone: that is a partial upgrade)
 
 ## Adding packages
 
-- **From the AUR:** add the package name to `aur.txt`. Pin a reviewed revision
-  with `name@<commit>`.
+- **From the AUR:** add `name@<commit>` to `aur.txt` after reviewing the
+  PKGBUILD at that commit. Unpinned entries are refused
+  (`ALLOW_UNPINNED_AUR=1` overrides); bump the pin only after reading the diff.
 - **Local PKGBUILD:** create `pkgs/<name>/PKGBUILD` with its source files. Add
   `pkgs/<name>/.nvchecker.toml` (section named after the package) to follow
   upstream releases. The version must be a valid `pkgver` (no `-`), so strip
@@ -119,8 +120,8 @@ Limits:
   third-party code. Root installs packages from this repository as build
   dependencies, so a malicious package can take over the builder container,
   and the container lives across cycles. The key and the token are out of
-  its reach, but it could still tamper with later builds. Review AUR
-  additions, pin commits and require lockfiles.
+  its reach, but it could still tamper with later builds. Review pinned
+  commits and require lockfiles.
 - A soname bump in Arch does not trigger rebuilds: bump `pkgrel` of the
   affected packages.
 
@@ -148,3 +149,4 @@ Settings (Dokploy environment):
 | `PACKAGER` | `quantmind-br <dsrodrigues20@gmail.com>` | Packager recorded in built packages |
 | `GITHUB_TOKEN` | unset | Publisher only: token for nvchecker (lifts the 60 requests/hour limit; required by `include_prereleases` with `use_latest_release`) |
 | `DELETE_GRACE_HOURS` | `24` | How long unreferenced package files stay downloadable |
+| `ALLOW_UNPINNED_AUR` | `0` | Builder: accept `aur.txt` entries without `@commit` |

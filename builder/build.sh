@@ -14,6 +14,7 @@ CACHE_DIR=${CACHE_DIR:-/var/cache/dsr-aur}
 WORK_DIR=${WORK_DIR:-/tmp/dsr-build}
 PRIVATE_DIR=${PRIVATE_DIR:-/root/dsr-build}
 BUILD_UID_BASE=${BUILD_UID_BASE:-200000}
+ALLOW_UNPINNED_AUR=${ALLOW_UNPINNED_AUR:-0}
 BUILD_INTERVAL=${BUILD_INTERVAL:-6h}
 BUILD_TIMEOUT=${BUILD_TIMEOUT:-8h}
 KEYSERVER=${KEYSERVER:-hkps://keyserver.ubuntu.com}
@@ -136,6 +137,12 @@ collect_sources() {
     rev=
     [[ $line == *@* ]] && rev=${line#*@}
     dir=$PRIVATE_DIR/stage/$name
+    if [[ -z $rev && $ALLOW_UNPINNED_AUR != 1 ]]; then
+      warn "AUR package $name is not pinned: use $name@<commit> after reviewing the PKGBUILD"
+      FAILED+=("$name")
+      PRUNE=0
+      continue
+    fi
     if [[ ! $name =~ $NAME_RE || ( -n $rev && ! $rev =~ ^[0-9a-f]{7,40}$ ) ]] ||
       ! timeout 10m git clone --quiet "https://aur.archlinux.org/$name.git" "$dir" ||
       [[ ! -f $dir/PKGBUILD ]] ||

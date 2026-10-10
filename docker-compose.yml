@@ -16,6 +16,7 @@ services:
       BUILD_INTERVAL: ${BUILD_INTERVAL:-6h}
       BUILD_TIMEOUT: ${BUILD_TIMEOUT:-8h}
       PACKAGER: ${PACKAGER:-quantmind-br <dsrodrigues20@gmail.com>}
+      ALLOW_UNPINNED_AUR: ${ALLOW_UNPINNED_AUR:-0}
     cpus: ${BUILDER_CPUS:-1.5}
     mem_limit: ${BUILDER_MEMORY:-6g}
     volumes:
