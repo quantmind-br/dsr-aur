@@ -178,15 +178,30 @@ repo_db() {
   GNUPGHOME=$SIGN_GNUPGHOME "$1" --quiet --sign --key "$SIGN_KEY" "${@:2}"
 }
 
-# repo-add only warns when signing fails; check both signatures and re-sign if needed.
+# True when $2 is a valid signature of $1 made by the active key.
+signed_by_active() {
+  gpg_sign --status-fd 1 --verify "$2" "$1" 2>/dev/null | grep -q "^\[GNUPG:\] VALIDSIG $SIGN_KEY "
+}
+
+# repo-add only warns when signing fails, and creates the .sig aliases only when it succeeds.
+# Both databases must exist, carry a signature by the active key (this also re-signs them after
+# a key rotation), and be reachable through the names pacman downloads.
 verify_db_signatures() {
-  local db
+  local db alias
+  [[ -e $DB ]] || return 0 # nothing published yet; a lost database is handled by db_lost
   for db in "$DB" "$FILES_DB"; do
-    [[ -e $db ]] || continue
-    gpg_sign --verify "$db.sig" "$db" &>/dev/null && continue
-    warn "Signature of ${db##*/} is missing or invalid; re-signing"
-    gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" --output "$db.sig" "$db" &&
-      gpg_sign --verify "$db.sig" "$db" &>/dev/null || return 1
+    if [[ ! -e $db ]]; then
+      warn "${db##*/} is missing"
+      return 1
+    fi
+    if ! signed_by_active "$db" "$db.sig"; then
+      warn "Signature of ${db##*/} is missing, invalid or by another key; re-signing"
+      gpg_sign --yes --detach-sign --no-armor --local-user "$SIGN_KEY" --output "$db.sig.new" "$db" &&
+        mv -f "$db.sig.new" "$db.sig" && signed_by_active "$db" "$db.sig" || return 1
+    fi
+    alias=${db%.tar.gz}
+    [[ $(readlink "$alias") == "${db##*/}" ]] || ln -sfn "${db##*/}" "$alias" || return 1
+    [[ $(readlink "$alias.sig") == "${db##*/}.sig" ]] || ln -sfn "${db##*/}.sig" "$alias.sig" || return 1
   done
 }
 
@@ -425,9 +440,9 @@ publish_once() {
   # repo-add only warns when signing fails, and a failed check must not wait for the next
   # package to be retried.
   if ! verify_db_signatures; then
-    alert signature "dsr-aur: database signature invalid" "The repository database signature is invalid and re-signing failed."
+    alert signature "dsr-aur: database broken" "The repository database, its signature by the active key or its pacman aliases are broken and could not be repaired."
   else
-    resolve signature "dsr-aur: database signature valid" "The repository database signature verifies again."
+    resolve signature "dsr-aur: database healthy" "The repository database and its signatures verify again."
   fi
   if (( failed )); then
     alert publish-error "dsr-aur: publishing failed" "A batch could not be published; see the dsr-publish logs."
