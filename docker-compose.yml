@@ -1,5 +1,7 @@
 services:
   builder:
+    # Arch Linux images are x86_64 only; ARM hosts run them through qemu-user-static.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: builder/Dockerfile

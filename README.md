@@ -44,6 +44,10 @@ Push to `main`. Dokploy redeploys the stack, and the builder builds on startup.
 - **web:** Caddy serving the `repo` volume read-only. Traefik (Dokploy)
   terminates TLS for `aur.quantforge.com.br`.
 
+The VPS is ARM64, so the builder runs as `linux/amd64` through QEMU user-mode
+emulation (`qemu-user-static` and `binfmt-support` on the host). Repackaging
+`-bin` packages is quick; compiling is several times slower than native.
+
 PKGBUILD code runs as the unprivileged `builder` user without sudo. Root
 installs build dependencies and holds the signing key. AUR PKGBUILDs are still
 third-party code: review them before adding, and pin a commit.
