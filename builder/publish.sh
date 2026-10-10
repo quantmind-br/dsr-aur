@@ -183,18 +183,6 @@ verify_db_signatures() {
   done
 }
 
-# Print the file name when the file is a regular package whose .PKGINFO matches its name.
-validate_package() {
-  local file=$1 base=${1##*/} info name version arch
-  [[ $base =~ $PKG_FILE_RE && -f $file && ! -L $file ]] || return 1
-  info=$(bsdtar -xOqf "$file" .PKGINFO 2>/dev/null) || return 1
-  pkginfo_is_safe "$info" || return 1
-  name=$(sed -n 's/^pkgname = //p' <<<"$info")
-  version=$(sed -n 's/^pkgver = //p' <<<"$info")
-  arch=$(sed -n 's/^arch = //p' <<<"$info")
-  [[ $base == "$name-$version-$arch.pkg.tar."* ]] || return 1
-  printf '%s\n' "$base"
-}
 
 # Copy into the repository under a hidden name, sign, then rename into place.
 stage_package() {
@@ -314,7 +302,7 @@ process_batch() {
   done < <(db_versions || true)
   for file in "$dir"/packages/*; do
     [[ -e $file ]] || continue
-    if ! base=$(validate_package "$file"); then
+    if ! base=$(package_file_is_valid "$file"); then
       warn "Batch $id: rejecting ${file##*/} (not a valid package)"
       rejected+=("${file##*/}")
       continue

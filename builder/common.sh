@@ -81,3 +81,23 @@ pkginfo_is_safe() {
     [[ $line =~ ^([a-z]+)\ =\ [[:print:]]*$ && $PKGINFO_KEYS == *" ${BASH_REMATCH[1]} "* ]] || return 1
   done <<<"$1"
 }
+
+# Print the file name when $1 is a regular package file that repo-add can read safely: an
+# allowed .PKGINFO whose single pkgname, pkgver and arch are well formed and name exactly this
+# file. repo-add builds paths from pkgname and pkgver ("$pkgname-$pkgver/desc"), so a value
+# such as "../../tmp/x" must never reach it.
+package_file_is_valid() {
+  local file=$1 base=${1##*/} info key name version arch
+  [[ $base =~ $PKG_FILE_RE && -f $file && ! -L $file ]] || return 1
+  info=$(bsdtar -xOqf "$file" .PKGINFO 2>/dev/null) || return 1
+  pkginfo_is_safe "$info" || return 1
+  for key in pkgname pkgver arch; do
+    [[ $(grep -c "^$key = " <<<"$info") == 1 ]] || return 1
+  done
+  name=$(sed -n 's/^pkgname = //p' <<<"$info")
+  version=$(sed -n 's/^pkgver = //p' <<<"$info")
+  arch=$(sed -n 's/^arch = //p' <<<"$info")
+  [[ $name =~ $NAME_RE && $version =~ ^([0-9]+:)?[A-Za-z0-9._+]+-[0-9.]+$ && $arch =~ ^(x86_64|any)$ ]] || return 1
+  [[ $base == "$name-$version-$arch.pkg.tar."* ]] || return 1
+  printf '%s\n' "$base"
+}
