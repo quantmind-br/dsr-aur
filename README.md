@@ -70,14 +70,14 @@ through the `exchange` volume.
 
 Builder safeguards:
 
-- PKGBUILD code runs as the unprivileged `builder` user without sudo. Root
-  installs build dependencies, after checking that every `.SRCINFO` entry
-  looks like a dependency, and passes them after `--`.
-- Root never writes into directories the build user can modify. It copies
+- Each package builds as its own unprivileged user (`dsrb<uid>`, UID derived
+  from the package name), without sudo. Its sources, download cache, ccache
+  and home are private (`700`), so one PKGBUILD cannot alter another package.
+  Root installs build dependencies, after checking that every `.SRCINFO`
+  entry looks like a dependency, and passes them after `--`.
+- Root never writes into directories a build user can modify. It copies
   outputs only when they are regular files at the expected path. It kills
-  every `builder` process before each root step and after each package.
-- Each package gets its own copy of the sources, its own download cache and
-  its own ccache.
+  the build user's processes before each root step and after each package.
 - The version never drops below the published one. When the upstream check
   fails, the published version is kept, and `pkgrel` comes from git.
 - GitHub release assets in `source=` must match the sha256 digest the GitHub
@@ -116,10 +116,11 @@ AVX-512, and builds run their own binaries.
 Limits:
 
 - AUR PKGBUILDs, and the dependencies upstream build systems download, are
-  third-party code. They run as the same `builder` user as every other build
-  in the cycle, so a malicious one can affect packages built after it, and
-  root installs packages from this repository as build dependencies. Review
-  AUR additions and pin commits.
+  third-party code. Root installs packages from this repository as build
+  dependencies, so a malicious package can take over the builder container,
+  and the container lives across cycles. The key and the token are out of
+  its reach, but it could still tamper with later builds. Review AUR
+  additions, pin commits and require lockfiles.
 - A soname bump in Arch does not trigger rebuilds: bump `pkgrel` of the
   affected packages.
 

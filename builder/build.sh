@@ -13,7 +13,7 @@ source "$(dirname "$(readlink -f "$0")")/common.sh"
 CACHE_DIR=${CACHE_DIR:-/var/cache/dsr-aur}
 WORK_DIR=${WORK_DIR:-/tmp/dsr-build}
 PRIVATE_DIR=${PRIVATE_DIR:-/root/dsr-build}
-BUILD_USER=${BUILD_USER:-builder}
+BUILD_UID_BASE=${BUILD_UID_BASE:-200000}
 BUILD_INTERVAL=${BUILD_INTERVAL:-6h}
 BUILD_TIMEOUT=${BUILD_TIMEOUT:-8h}
 KEYSERVER=${KEYSERVER:-hkps://keyserver.ubuntu.com}
@@ -30,18 +30,53 @@ FAILED=()
 PRUNE=1
 declare -A SOURCE_PATH=() IS_LOCAL=() PUBLISHED=() UPSTREAM=()
 
+BUILD_USER= # set per package by build_package
+
 as_builder() { runuser -u "$BUILD_USER" -- "$@"; }
 
 # Kill everything the build user left behind, so nothing races the root steps that follow.
 stop_build_user() { pkill -KILL -u "$BUILD_USER" 2>/dev/null || true; }
 
+stop_all_build_users() {
+  local users
+  users=$(awk -F: '$1 ~ /^dsrb[0-9]+$/ { print $1 }' /etc/passwd | paste -sd, -)
+  if [[ -n $users ]]; then pkill -KILL -u "$users" 2>/dev/null || true; fi
+}
+
+# Each package builds as its own user, so one PKGBUILD cannot touch another package's
+# sources, caches or home. The UID derives from the name and survives container rebuilds.
+build_user_for() {
+  local name=$1 uid user
+  uid=$((BUILD_UID_BASE + $(printf '%s' "$name" | cksum | cut -d ' ' -f 1) % 100000000))
+  user=dsrb$uid
+  if ! getent passwd "$user" >/dev/null; then
+    if getent passwd "$uid" >/dev/null; then
+      warn "UID $uid for $name is already taken"
+      return 1
+    fi
+    useradd --uid "$uid" --user-group --no-create-home --home-dir "$CACHE_DIR/home/$name" --shell /bin/bash "$user" || return 1
+  fi
+  printf '%s\n' "$user"
+}
+
+# Create a directory owned by the package's user, fixing ownership left by an older UID.
+own_dir() {
+  local dir
+  for dir; do
+    install -d -m 700 -o "$BUILD_USER" -g "$BUILD_USER" "$dir" || return 1
+    if [[ -n $(find "$dir" ! -user "$BUILD_USER" -print -quit) ]]; then
+      chown -R "$BUILD_USER:$BUILD_USER" "$dir" || return 1
+    fi
+  done
+}
+
 # Root-owned parents keep the build user from swapping the directories root reads from.
 prepare() {
-  stop_build_user
+  stop_all_build_users
   rm -rf "$WORK_DIR" "$PRIVATE_DIR"
   install -d -m 700 "$PRIVATE_DIR" "$PRIVATE_DIR/stage" "$PRIVATE_DIR/out" "$PRIVATE_DIR/known"
   install -d -o root -g root -m 755 "$WORK_DIR" "$WORK_DIR/sources" "$WORK_DIR/out" \
-    "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache"
+    "$CACHE_DIR" "$CACHE_DIR/sources" "$CACHE_DIR/ccache" "$CACHE_DIR/home"
   install -d "$INCOMING_DIR"
   [[ -f /etc/pacman.conf.orig ]] || cp /etc/pacman.conf /etc/pacman.conf.orig
   cp /etc/pacman.conf.orig /etc/pacman.conf
@@ -326,11 +361,12 @@ trim_source_cache() {
 build_package() {
   local name=$1 dir=$WORK_DIR/sources/$1 srcinfo
   export PKGDEST=$WORK_DIR/out/$name SRCDEST=$CACHE_DIR/sources/$name CCACHE_DIR=$CACHE_DIR/ccache/$name
+  BUILD_USER=$(build_user_for "$name") || return 1
   rm -rf "$dir" "$PKGDEST" || return 1
   cp -r "${SOURCE_PATH[$name]}" "$dir" || return 1
   rm -rf "$dir/src" "$dir/pkg" "$dir"/*.pkg.tar.*
-  chown -R "$BUILD_USER:$BUILD_USER" "$dir" || return 1
-  install -d -o "$BUILD_USER" -g "$BUILD_USER" "$PKGDEST" "$SRCDEST" "$CCACHE_DIR" || return 1
+  chown -R "$BUILD_USER:$BUILD_USER" "$dir" && chmod 700 "$dir" || return 1
+  own_dir "$PKGDEST" "$SRCDEST" "$CCACHE_DIR" "$CACHE_DIR/home/$name" || return 1
   cd "$dir" || return 1
 
   if [[ -n ${IS_LOCAL[$name]:-} ]] && ! is_vcs; then
@@ -419,7 +455,7 @@ trim_caches() {
   local path
   local -A current=()
   for path in "${SOURCES[@]}" "${FAILED[@]}"; do current[$path]=1; done
-  for path in "$CACHE_DIR"/sources/* "$CACHE_DIR"/ccache/*; do
+  for path in "$CACHE_DIR"/sources/* "$CACHE_DIR"/ccache/* "$CACHE_DIR"/home/*; do
     [[ -e $path || -L $path ]] || continue
     [[ -d $path && ! -L $path && -n ${current[${path##*/}]:-} ]] || rm -rf -- "$path"
   done
@@ -474,7 +510,7 @@ build_once() {
   done
   trim_caches
   write_batch "$started"
-  stop_build_user
+  stop_all_build_users
   rm -rf "$WORK_DIR"
 
   if (( ${#FAILED[@]} )); then
