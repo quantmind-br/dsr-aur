@@ -125,9 +125,9 @@ setup_signing() {
 # Configs come from the image (git), never from the builder. A failed check keeps the
 # previous answer, and dsr-build never builds below the published version anyway.
 check_versions() {
-  local stamp=$STATE_DIR/versions-checked config raw output errors name version
-  local -a configs=() keys=()
-  local -A versions=()
+  local stamp=$STATE_DIR/versions-checked config raw status=0 name version
+  local -a configs=() keys=() failed=()
+  local -A versions=() resolved=()
   if [[ -f $stamp && -z $(find "$stamp" -mmin +"$VERSION_CHECK_MINUTES") ]]; then
     return 0
   fi
@@ -142,15 +142,28 @@ check_versions() {
     keys=(-k "$NVCHECKER_KEYFILE")
   fi
   cat "${configs[@]}" >"$STATE_DIR/nvchecker.toml"
-  raw=$(timeout 10m nvchecker --logger json -c "$STATE_DIR/nvchecker.toml" "${keys[@]}" 2>&1) || true
-  output=$(jq -rR 'fromjson? | select(.name != null and .version != null) | "\(.name) \(.version)"' <<<"$raw")
-  errors=$(jq -rR 'fromjson? | select(.name != null and .error != null) | .name' <<<"$raw" | sort -u | paste -sd ' ' -)
-  if [[ -z $output && -z $errors ]]; then errors="all (nvchecker returned no versions)"; fi
+  raw=$(timeout 10m nvchecker --logger json -c "$STATE_DIR/nvchecker.toml" "${keys[@]}" 2>&1) || status=$?
+
+  # Success means every configured entry produced a valid pkgver in this run; anything else
+  # (error, timeout, invalid or missing version) counts as a failure for that entry.
+  while read -r name version; do
+    [[ -n $name ]] || continue
+    if [[ $name =~ $NAME_RE && $version =~ $PKGVER_RE ]]; then
+      resolved[$name]=$version
+    else
+      warn "Ignoring upstream version '$version' of '$name' (not a valid pkgver)"
+    fi
+  done < <(jq -rR 'fromjson? | select(.name != null and .version != null) | "\(.name) \(.version)"' <<<"$raw")
+  while read -r name; do
+    if [[ -n $name && -z ${resolved[$name]:-} ]]; then failed+=("$name"); fi
+  done < <(sed -n 's/^[[:space:]]*\[\([^]]*\)\][[:space:]]*$/\1/p' "$STATE_DIR/nvchecker.toml" | grep -v '^__' | sort -u)
+  if (( status == 124 )); then warn "nvchecker timed out"; fi
+
   # Failed entries keep their previous version, so nothing is downgraded; say so instead of
   # silently freezing updates.
-  if [[ -n $errors ]]; then
-    warn "Upstream version check failed for: $errors"
-    alert version-check "dsr-aur: version checks failing" "nvchecker failed for: $errors. Their versions are frozen until it recovers."
+  if (( ${#failed[@]} )); then
+    warn "Upstream version check failed for: ${failed[*]}"
+    alert version-check "dsr-aur: version checks failing" "nvchecker failed for: ${failed[*]}. Their versions are frozen until it recovers."
   else
     resolve version-check "dsr-aur: version checks recovered" "Every upstream version check succeeded."
   fi
@@ -160,19 +173,13 @@ check_versions() {
       if [[ $name =~ $NAME_RE && $version =~ $PKGVER_RE ]]; then versions[$name]=$version; fi
     done <"$VERSIONS_FILE"
   fi
-  while read -r name version; do
-    [[ -n $name ]] || continue
-    if [[ $name =~ $NAME_RE && $version =~ $PKGVER_RE ]]; then
-      versions[$name]=$version
-    else
-      warn "Ignoring upstream version '$version' of '$name' (not a valid pkgver)"
-    fi
-  done <<<"$output"
+  for name in "${!resolved[@]}"; do versions[$name]=${resolved[$name]}; done
   for name in "${!versions[@]}"; do
     if [[ -f $SOURCE_DIR/pkgs/$name/.nvchecker.toml ]]; then echo "$name ${versions[$name]}"; fi
   done | sort >"$VERSIONS_FILE.tmp"
   mv -f "$VERSIONS_FILE.tmp" "$VERSIONS_FILE"
   touch "$stamp"
+  (( ${#failed[@]} == 0 ))
 }
 
 # Run repo-add or repo-remove against the database, signed. Only this process writes the
@@ -533,8 +540,10 @@ case ${1:-once} in
     check_tools
     install -d "$STATE_DIR" "$CONTROL_DIR"
     rm -f "$STATE_DIR/versions-checked"
-    check_versions
+    status=0
+    check_versions || status=$?
     cat "$VERSIONS_FILE"
+    exit "$status"
     ;;
   *)
     echo "usage: ${0##*/} [once|loop|resign|versions]" >&2
