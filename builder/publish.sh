@@ -320,8 +320,10 @@ publish_once() {
       if (( rc == 0 || rc == 3 )); then
         rm -rf -- "$entry"
       else
-        warn "Batch ${entry##*/} failed; retrying next cycle"
+        # Later batches wait: applied after it, this older batch would undo their changes.
+        warn "Batch ${entry##*/} failed; retrying it, and holding later batches, next cycle"
         failed=1
+        break
       fi
     done
   fi
