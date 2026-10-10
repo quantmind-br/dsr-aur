@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "skills": {
+    "dsr-aur": {
+      "canonicalPath": "dsr-aur",
+      "baseCommit": "d815e6000ca4766996a9f166d1d8f92f61e3d604",
+      "baseTree": null,
+      "baseTreeHash": null,
+      "dirHash": "ceaa16f603ef5b5bcd62d9d88a721c7824d9b3194ab2f8b9e00064eab4e195df",
+      "syncedAt": "2026-10-10T15:45:20.219619401Z"
+    }
+  }
+}

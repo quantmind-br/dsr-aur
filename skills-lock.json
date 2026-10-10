@@ -1,0 +1,11 @@
+{
+  "skills": {
+    "dsr-aur": {
+      "computedHash": "29e2f72a1380f84ee797602d200ac526270854979b1818efb8b02363580cc5f9",
+      "skillPath": "dsr-aur/SKILL.md",
+      "source": "/home/diogo/dev/skills",
+      "sourceType": "local"
+    }
+  },
+  "version": 1
+}
