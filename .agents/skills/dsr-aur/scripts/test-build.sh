@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build package directories natively in the dsr-aur image, exactly as the server does:
-# the publisher resolves upstream versions (.nvchecker.toml), then the builder bumps and
-# builds (flags, per-package users, dependency passes). Packages are copied out.
+# Build package directories natively in the dsr-aur image, as the CI build workflow does:
+# resolve upstream versions (.nvchecker.toml), then the builder bumps and builds (flags,
+# per-package users, dependency passes). Packages are copied out.
 # Packages that depend on each other can be passed together.
 #
 # Usage: test-build.sh <pkgdir>...
@@ -48,7 +48,7 @@ status=0
 docker run --name "$run" --init -v "$run-repo:/srv/repo:ro" -v "$run-exchange:/srv/exchange" \
   -v "$run-control:/srv/control:ro" -v "$src:/src:ro" "$image" dsr-build once || status=$?
 docker rm "$run" >/dev/null
-echo "==> Build took $((SECONDS - start))s natively; expect 5-10x on the server (QEMU)"
+echo "==> Build took $((SECONDS - start))s natively; expect about 5x in CI (4 vCPUs, 340-minute job limit)"
 
 docker run --rm -v "$run-exchange:/x:ro" -v "$out_dir:/out" alpine sh -c \
   "set -e; for f in /x/incoming/*/packages/*.pkg.tar.*; do [ -e \"\$f\" ] && cp \"\$f\" /out/; done; chown -R $(id -u):$(id -g) /out"

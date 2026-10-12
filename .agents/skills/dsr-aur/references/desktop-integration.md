@@ -78,7 +78,7 @@ Add only the defaults that the toolkit table calls for. Always `exec`, so the wi
 | Flutter | `gtk3` | none |
 | Vulkan / OpenGL | `vulkan-icd-loader` / `libglvnd` | none |
 
-Never depend on `nvidia-utils` or a specific driver; depend on the generic loaders. CUDA apps depend on `cuda` (or `opencl-nvidia` for OpenCL) and must build for `sm_86` (`CMAKE_CUDA_ARCHITECTURES=86`, `TORCH_CUDA_ARCH_LIST=8.6`). A CUDA source build is slow under QEMU; prefer the `-bin` variant.
+Never depend on `nvidia-utils` or a specific driver; depend on the generic loaders. CUDA apps depend on `cuda` (or `opencl-nvidia` for OpenCL) and must build for `sm_86` (`CMAKE_CUDA_ARCHITECTURES=86`, `TORCH_CUDA_ARCH_LIST=8.6`). A CUDA source build is slow on the 4-vCPU CI runner; prefer the `-bin` variant.
 
 ## Symptoms and fixes
 

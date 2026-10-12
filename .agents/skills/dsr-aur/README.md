@@ -19,7 +19,7 @@ symlink at `~/.agents/skills/dsr-aur`.
 
 ## Design notes
 
-- Packages are compiled with `-march=x86-64-v3 -mtune=znver5`, not `znver5`/`x86-64-v4`: the server builder is x86_64 under QEMU on ARM64, which executes AVX2/FMA/BMI2 but raises SIGILL on AVX-512, and builds run their own binaries (tests, build scripts).
+- Packages are compiled with `-march=x86-64-v3 -mtune=znver5`, not `znver5`/`x86-64-v4`: builds run natively on GitHub Actions, but the fallback builder on the VPS is x86_64 under QEMU on ARM64, which executes AVX2/FMA/BMI2 but raises SIGILL on AVX-512, and builds run their own binaries (tests, build scripts).
 - The repository runs a builder (third-party code, no key, no token) and a publisher (validates, signs, publishes, resolves upstream versions with nvchecker). PKGBUILDs in git keep their original version; the builder raises its working copy to the publisher's upstream version, never below the published one, keeps `pkgrel` from git, and checks GitHub release assets against the API digests. Published file names are immutable.
 - nvchecker's `include_regex` must match the whole tag. Monorepo suggestions use a stable-only regex because some projects (tauri) publish alphas without the prerelease flag.
 - AppImages are unpacked with `unsquashfs -o <offset>` computed from the ELF section header table, so nothing upstream runs at build time. appimage-builder images use a relative ELF interpreter and must be launched through `AppRun`.
@@ -35,3 +35,5 @@ symlink at `~/.agents/skills/dsr-aur`.
 - 2026-10-10: second Codex review: test-build resolves upstream versions first, `-git` provides versioned with tags, epoch in provides, verify-install exit 3 for inconclusive runs, icon extraction into the PKGBUILD directory.
 - 2026-10-10: third Codex review: test-build fails when upstream version resolution fails (and forwards GITHUB_TOKEN to the resolver), epoch in the provides rule.
 - 2026-10-10: note the builder's automatic ABI rebuilds (fractional pkgrel).
+- 2026-10-10: the builder moved to GitHub Actions (native x86_64); publishing steps follow the workflow run.
+- 2026-10-12: measured CI timing (about 5x native, 340-minute job limit), `gh run watch` with a run id outside a terminal, publisher check through `status.json` `last_build`, conflicting AUR builds during install tests, QEMU notes limited to the fallback VPS builder.
