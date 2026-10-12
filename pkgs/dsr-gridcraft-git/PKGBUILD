@@ -1,10 +1,10 @@
 # Maintainer: quantmind-br <dsrodrigues20@gmail.com>
 pkgname=dsr-gridcraft-git
 _name=gridcraft
-_branch=m12-languages
-pkgver=0.5.0.r249.g12ce98c
+_branch=localization
+pkgver=0.5.0.r603.gd5c863e
 pkgrel=1
-pkgdesc='Clean-room Excel-style spreadsheet in Rust, multi-language branch of the quantmind-br fork (built from git)'
+pkgdesc='Clean-room Excel-style spreadsheet in Rust, localization branch of the quantmind-br fork: local formulas and regional formats (built from git)'
 arch=('x86_64')
 url='https://github.com/quantmind-br/gridcraft'
 license=('Apache-2.0' 'MIT')
