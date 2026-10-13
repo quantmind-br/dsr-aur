@@ -1,0 +1,66 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+pkgname=dsr-solidcraft-git
+_name=solidcraft
+_app_id=ai.storyteller.solidcraft
+_branch=feat/sketch-shortcut-auto-sketch
+pkgver=0.8.0.r0.g0000000
+pkgrel=1
+pkgdesc='Open-source parametric 3D CAD in Rust, sketch-shortcut branch of the quantmind-br fork: sketch tool keys open a sketch automatically (built from git)'
+arch=('x86_64')
+url='https://github.com/quantmind-br/solidcraft'
+license=('Apache-2.0' 'MIT')
+# eframe/wgpu/winit load the windowing and GPU libraries at run time (dlopen).
+depends=('glibc' 'libgcc' 'hicolor-icon-theme' 'libxkbcommon' 'wayland' 'vulkan-icd-loader' 'libglvnd')
+makedepends=('cargo' 'git')
+optdepends=('libxkbcommon-x11: X11 fallback'
+            'libx11: X11 fallback'
+            'libxcb: X11 fallback'
+            'libxcursor: X11 fallback'
+            'libxi: X11 fallback'
+            'xdg-desktop-portal: file open and save dialogs')
+provides=("$_name=${pkgver%%.r*}")
+conflicts=("$_name" "$_name-bin" "$_name-git" 'dsr-solidcraft' 'dsr-solidcraft-bin')
+source=("$_name::git+$url.git#branch=$_branch")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_name"
+  # The fork's branch is not tagged; the workspace version names the release it is based on.
+  local version
+  version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+  printf '%s.r%s.g%s' "${version//-/_}" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_name"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_name"
+  CARGO_TARGET_DIR=target cargo build --frozen --release -p solidcraft -p solidcraft-cli
+}
+
+package() {
+  cd "$_name"
+  local version=${pkgver%%.r*}
+  install -Dm755 "target/release/$_name" "target/release/$_name-cli" -t "$pkgdir/usr/bin"
+
+  # Desktop entry: upstream's, minus TryExec (the id already matches the window's app_id).
+  install -Dm644 "packaging/linux/$_app_id.desktop" -t "$pkgdir/usr/share/applications"
+  sed -i '/^TryExec=/d' "$pkgdir/usr/share/applications/$_app_id.desktop"
+  install -Dm644 "packaging/linux/$_app_id.mime.xml" "$pkgdir/usr/share/mime/packages/$_app_id.xml"
+  install -d "$pkgdir/usr/share/metainfo"
+  sed -e "s/@VERSION@/$version/g" -e "s/@DATE@/$(date -u +%Y-%m-%d)/g" \
+    "packaging/linux/$_app_id.metainfo.xml.in" >"$pkgdir/usr/share/metainfo/$_app_id.metainfo.xml"
+
+  # The icon is drawn by the CLI; no image files are committed upstream.
+  local size
+  for size in 16 24 32 48 64 128 256 512; do
+    install -d "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps"
+    "target/release/$_name-cli" icon --size "$size" \
+      --out "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$_app_id.png" >/dev/null
+  done
+
+  install -Dm644 LICENSE-APACHE LICENSE-MIT NOTICE THIRD-PARTY-LICENSES.txt -t "$pkgdir/usr/share/licenses/$pkgname"
+}
