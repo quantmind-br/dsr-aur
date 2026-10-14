@@ -2,7 +2,7 @@
 pkgname=dsr-gridcraft-git
 _name=gridcraft
 _branch=localization
-pkgver=0.6.1.r1022.ga69ea00
+pkgver=0.7.0.r1026.gd60d2a5
 pkgrel=1
 pkgdesc='Clean-room Excel-style spreadsheet in Rust, localization branch of the quantmind-br fork: local formulas and regional formats (built from git)'
 arch=('x86_64')
