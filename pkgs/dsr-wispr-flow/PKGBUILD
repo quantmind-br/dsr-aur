@@ -1,0 +1,107 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+pkgname=dsr-wispr-flow
+_name=wispr-flow
+_port=wispr-flow-linux
+pkgver=1.6.1147
+pkgrel=1
+# Same ABI (146) as the 42.3.0 the port pins, so its prebuilt sqlite modules load.
+_electron=42.11.14
+pkgdesc='Wispr Flow voice dictation, repackaged for Linux by the unofficial wispr-flow-linux port as a native package (sandboxed, newer Electron)'
+arch=('x86_64')
+url='https://github.com/wispr-flow-linux/wispr-flow-linux'
+license=('LicenseRef-Wispr-Flow' 'Unlicense')
+depends=('wispr-flow-linux-helper' 'wl-clipboard' 'gtk3' 'nss' 'alsa-lib' 'libsecret')
+makedepends=('git' '7zip' 'unzip' 'nodejs' 'npm' 'python' 'rsync' 'dpkg' 'curl'
+             'wispr-flow-linux-helper')
+optdepends=('xclip: clipboard paste injection on X11'
+            'xsel: clipboard paste injection on X11 (fallback)')
+provides=("$_name=$pkgver")
+conflicts=("$_name" "$_name-bin" "$_name-git" "$_name-appimage")
+options=('!strip' '!debug')
+install=$pkgname.install
+noextract=("electron-v$_electron-linux-x64.zip")
+# The port is tracked on main: .nvchecker.toml follows the Wispr version its
+# installer pin names, and prepare() refuses a checkout that pins another one.
+source=("$_port::git+$url.git#branch=main"
+        "electron-v$_electron-linux-x64.zip::https://github.com/electron/electron/releases/download/v$_electron/electron-v$_electron-linux-x64.zip"
+        "wispr-flow-setup-$pkgver.exe::https://dl.wisprflow.com/wispr-flow/win32/x64/Wispr%20Flow%20Setup-v$pkgver.exe"
+        'linux-deeplink-warm.patch'
+        'wispr-flow.modules-load.conf')
+sha256sums=('SKIP'
+            '0c8d31b8c2f2d30ffbb78cd4837e145e158971285777d67588ee2c166ecd7ed1'
+            '57d25682d9d7b0047253737119ad936a5e178031b0d0f79616154745890f6bf0'
+            'e75bb82d6816b0af2215659415318a79985a92e6d779f5d36917d5f2ce1a280c'
+            'a771c9695d7283f7771adc00b680bd27391e6ac00e9fd026f4796067ee9a87eb')
+
+prepare() {
+  cd "$_port"
+
+  # Deep links opened while the app runs (port PR pending); skipped once the
+  # port ships the patch itself.
+  if [[ ! -f scripts/patches/linux-deeplink-warm.sh ]]; then
+    git apply "$srcdir/linux-deeplink-warm.patch"
+  fi
+
+  local pinned
+  pinned=$(sed -n "s/^WISPR_VERSION='\([0-9.]*\)'.*/\1/p" scripts/setup/installer-pin.sh)
+  if [[ $pinned != "$pkgver" ]]; then
+    echo "The port's installer pin names $pinned, not $pkgver." >&2
+    return 1
+  fi
+
+  sed -i -e "s/^readonly ELECTRON_VERSION=.*/readonly ELECTRON_VERSION='$_electron'/" \
+    -e "s/^readonly ELECTRON_MAJOR=.*/readonly ELECTRON_MAJOR='${_electron%%.*}'/" build.sh
+  grep -qx "readonly ELECTRON_VERSION='$_electron'" build.sh
+
+  # Seed the port's download cache: build.sh re-verifies the installer against
+  # its pinned sha256 and unpacks the Electron zip from here.
+  mkdir -p build-linux/downloads
+  ln -sf "$srcdir/electron-v$_electron-linux-x64.zip" build-linux/downloads/
+  ln -sf "$srcdir/wispr-flow-setup-$pkgver.exe" build-linux/downloads/
+
+  # The published native-v1 modules are built for Electron 42.3.0. Fetching
+  # them without the exact-version expectation still checks their SHA256SUMS,
+  # the patch hash and ABI 146.
+  rm -rf "$srcdir/native"
+  scripts/setup/fetch-native-bin.sh x86_64 "$srcdir/native"
+}
+
+build() {
+  cd "$_port"
+  HELPER_BIN=/usr/bin/wispr-flow-linux-helper NATIVE_MODULES_DIR="$srcdir/native" \
+    ./build.sh --build deb --clean no
+}
+
+check() {
+  cd "$_port"
+  local dist=$srcdir/$_port/build-linux/downloads/electron-dist
+  scripts/verify-patches.sh "$dist/resources/app.asar"
+  scripts/native-modules/smoke-test.sh "$srcdir/native" "$dist/wispr-flow" 146
+}
+
+package() {
+  cd "$_port"
+  local deb=(build-linux/deb/"$_name"_*_amd64.deb)
+  bsdtar -xOf "${deb[0]}" 'data.tar.*' | bsdtar -xf - -C "$pkgdir"
+  rm -rf "$pkgdir/usr/share/doc"
+
+  local app=$pkgdir/usr/lib/$_name
+  # The .deb sets the sandbox setuid in its postinst; a pacman package carries it.
+  chmod 4755 "$app/chrome-sandbox"
+  # The .deb postinst copies the rule into place; install it directly.
+  install -Dm644 "$app/70-wispr-flow-uinput.rules" -t "$pkgdir/usr/lib/udev/rules.d"
+  rm "$app/70-wispr-flow-uinput.rules"
+  install -Dm644 "$srcdir/wispr-flow.modules-load.conf" "$pkgdir/usr/lib/modules-load.d/$_name.conf"
+
+  # Run the packaged helper, so it updates on its own.
+  ln -sf /usr/bin/wispr-flow-linux-helper "$app/resources/Release/wispr-flow-linux-helper"
+
+  # Register the wispr-flow: scheme (sign-in links); port PR #129 adds this upstream.
+  local entry=$pkgdir/usr/share/applications/$_name.desktop
+  grep -q '^MimeType=.*x-scheme-handler/wispr-flow;' "$entry" \
+    || sed -i '/^\[Desktop Entry\]/a MimeType=x-scheme-handler/wispr-flow;' "$entry"
+  # Native Wayland windows carry app_id wispr-flow; "Wispr Flow" is the X11 class.
+  sed -i 's/^StartupWMClass=.*/StartupWMClass=wispr-flow/' "$entry"
+
+  install -Dm644 UNLICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+}

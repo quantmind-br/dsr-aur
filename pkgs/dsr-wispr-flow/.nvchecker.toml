@@ -1,0 +1,5 @@
+# The Wispr Flow version the port's main branch pins (the nightly bump moves it).
+[dsr-wispr-flow]
+source = "regex"
+url = "https://raw.githubusercontent.com/wispr-flow-linux/wispr-flow-linux/main/scripts/setup/installer-pin.sh"
+regex = "WISPR_VERSION='([0-9.]+)'"

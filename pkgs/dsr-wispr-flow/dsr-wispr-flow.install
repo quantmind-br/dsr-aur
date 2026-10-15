@@ -1,0 +1,19 @@
+_reload_input_rules() {
+  udevadm control --reload-rules 2>/dev/null || return 0
+  udevadm trigger --subsystem-match=misc --sysname-match=uinput 2>/dev/null
+  udevadm trigger --subsystem-match=input 2>/dev/null
+  return 0
+}
+
+post_install() {
+  modprobe uinput 2>/dev/null
+  _reload_input_rules
+  echo 'Wispr Flow needs /dev/uinput and /dev/input/event* for push-to-talk and'
+  echo 'text injection. The udev rule grants them to the active session; if'
+  echo '"wispr-flow --doctor" still reports no access, add yourself to the'
+  echo '"input" group (sudo usermod -aG input "$USER") and log in again.'
+}
+
+post_upgrade() {
+  _reload_input_rules
+}
