@@ -1,0 +1,46 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+pkgname=dsr-wispr-flow-linux-helper-git
+_name=wispr-flow-linux-helper
+_branch=integration
+pkgver=0.1.2.r11.g8f3abed
+pkgrel=1
+pkgdesc='Clean-room Linux helper for Wispr Flow (text injection, push-to-talk, AT-SPI context, MPRIS pause), integration branch of the quantmind-br fork (built from git)'
+arch=('x86_64')
+url='https://github.com/quantmind-br/wispr-flow-linux-helper'
+license=('Unlicense')
+depends=('glibc' 'libgcc')
+makedepends=('cargo' 'git')
+optdepends=('wl-clipboard: clipboard paste injection on Wayland'
+            'xclip: clipboard paste injection on X11'
+            'xsel: clipboard paste injection on X11 (fallback)'
+            'at-spi2-core: selection reads and text-field context')
+provides=("$_name=${pkgver%%.r*}")
+conflicts=("$_name" "$_name-bin" "$_name-git")
+source=("$_name::git+$url.git#branch=$_branch")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_name"
+  git describe --long --tags --abbrev=7 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+}
+
+prepare() {
+  cd "$_name"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_name"
+  CARGO_TARGET_DIR=target cargo build --frozen --release
+}
+
+check() {
+  cd "$_name"
+  CARGO_TARGET_DIR=target cargo test --frozen --release
+}
+
+package() {
+  cd "$_name"
+  install -Dm755 "target/release/$_name" -t "$pkgdir/usr/bin"
+  install -Dm644 UNLICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+}
