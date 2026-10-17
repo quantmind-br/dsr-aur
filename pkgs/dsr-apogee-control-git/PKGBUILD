@@ -1,7 +1,7 @@
 # Maintainer: quantmind-br <dsrodrigues20@gmail.com>
 pkgname=dsr-apogee-control-git
 _name=apogee-control
-pkgver=2.0.0.r8.g68ce686
+pkgver=2.0.0.r10.g54d7cfb
 pkgrel=1
 pkgdesc='Control panel for the Apogee Duet USB audio interface, written in Rust and Tauri (built from git)'
 arch=('x86_64')
@@ -39,6 +39,10 @@ package() {
   install -Dm755 "src-tauri/target/release/$_name" -t "$pkgdir/usr/bin"
   install -Dm644 "packaging/linux/$_name.desktop" -t "$pkgdir/usr/share/applications"
   install -Dm644 packaging/linux/70-apogee-duet.rules -t "$pkgdir/usr/lib/udev/rules.d"
+  install -Dm644 packaging/linux/alsa-card-profile/profile-sets/apogee-duet.conf \
+    -t "$pkgdir/usr/share/alsa-card-profile/mixer/profile-sets"
+  install -Dm644 packaging/linux/alsa-card-profile/paths/apogee-duet-output.conf \
+    -t "$pkgdir/usr/share/alsa-card-profile/mixer/paths"
   install -Dm644 "packaging/linux/$_name.svg" -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
   local size file
   for size in 32 64 128 256 512; do

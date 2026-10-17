@@ -1,3 +1,8 @@
 post_install() {
-  echo '==> Replug the Apogee Duet so the udev rule grants your user access to it.'
+  echo '==> Replug the Apogee Duet and restart WirePlumber (systemctl --user restart wireplumber)'
+  echo '    so the udev rule grants USB access and selects its ALSA card profile set.'
+}
+
+post_upgrade() {
+  post_install
 }
