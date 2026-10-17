@@ -1,0 +1,52 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+pkgname=dsr-apogee-control-git
+_name=apogee-control
+pkgver=2.0.0.r8.g68ce686
+pkgrel=1
+pkgdesc='Control panel for the Apogee Duet USB audio interface, written in Rust and Tauri (built from git)'
+arch=('x86_64')
+url='https://github.com/quantmind-br/apogee-control'
+license=('GPL-3.0-only')
+depends=('glibc' 'libgcc' 'hicolor-icon-theme' 'webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2'
+         'libsoup3' 'dbus' 'libusb')
+makedepends=('cargo' 'git')
+provides=("$_name=${pkgver%%.r*}")
+conflicts=("$_name" "$_name-bin" "$_name-git" 'dsr-apogee-control' 'dsr-apogee-control-bin')
+install=$pkgname.install
+source=("$_name::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_name"
+  # Upstream has no release tags; the crate version names the release.
+  local version
+  version=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)
+  printf '%s.r%s.g%s' "${version//-/_}" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_name/src-tauri"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_name/src-tauri"
+  CARGO_TARGET_DIR=target cargo build --frozen --release --features tauri/custom-protocol
+}
+
+package() {
+  cd "$_name"
+  install -Dm755 "src-tauri/target/release/$_name" -t "$pkgdir/usr/bin"
+  install -Dm644 "packaging/linux/$_name.desktop" -t "$pkgdir/usr/share/applications"
+  install -Dm644 packaging/linux/70-apogee-duet.rules -t "$pkgdir/usr/lib/udev/rules.d"
+  install -Dm644 "packaging/linux/$_name.svg" -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
+  local size file
+  for size in 32 64 128 256 512; do
+    case $size in
+      256) file=128x128@2x.png ;;
+      512) file=icon.png ;;
+      *) file=${size}x$size.png ;;
+    esac
+    install -Dm644 "src-tauri/icons/$file" "$pkgdir/usr/share/icons/hicolor/${size}x$size/apps/$_name.png"
+  done
+}

@@ -1,0 +1,3 @@
+post_install() {
+  echo '==> Replug the Apogee Duet so the udev rule grants your user access to it.'
+}
