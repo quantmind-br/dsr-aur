@@ -1,0 +1,116 @@
+# Maintainer: quantmind-br <dsrodrigues20@gmail.com>
+# Based on the AUR package deepseek-harness-desktop by HarryLoong <xiangzelong@radxa.com>,
+# which supplies linux-desktop.patch and deepseek-harness-linux.env.
+#
+# Builds the DeepSeek Harness *desktop* application from the upstream repository. Upstream
+# publishes desktop releases for macOS and Windows only; the sources already contain the
+# packaging target, and linux-desktop.patch adds the Linux wiring (target, unsigned release
+# settings, Electron-safe sharp build, LibreOfficeKit probe fix). The result is the same shape
+# as the macOS and Windows releases: the Electron shell plus a complete dsh runtime with
+# Node.js, pnpm, CPython and the Office libraries bundled.
+#
+# The build downloads the pinned Electron distribution, the Node.js and CPython runtimes and
+# the Python wheels the bundled payload locks (scripts/primary-runtime/lock.json). The
+# repository pins each of them by SHA-256 and the runtime downloader enforces the digest.
+#
+# linux-desktop.patch is written against one release. When a newer tag changes the files it
+# touches, prepare() fails with a clear message and the published version stays; regenerate
+# the patch for that tag and bump pkgrel.
+#
+# makepkg reports references to $srcdir inside resources/app.asar: they are CSS-module virtual
+# paths the client bundler writes into `//#region` comments. Nothing resolves them at runtime.
+pkgname=dsr-deepseek-harness-desktop
+_name=deepseek-harness-desktop
+_appid=deepseek-ai-dsh-desktop
+pkgver=0.2.1_rc.2
+pkgrel=1
+# Upstream tags are dsh-v0.2.1-rc.2; pkgver cannot contain '-', nvchecker maps it to '_'.
+_tag="dsh-v${pkgver//_/-}"
+pkgdesc='DeepSeek Harness desktop application (Electron shell and bundled dsh runtime), built from source'
+arch=('x86_64')
+url='https://github.com/deepseek-ai/deepseek-harness'
+license=('MIT')
+depends=('alsa-lib' 'at-spi2-core' 'cairo' 'dbus' 'expat' 'glib2' 'gtk3' 'libcups'
+         'libx11' 'libxcb' 'libxcomposite' 'libxdamage' 'libxext' 'libxfixes'
+         'libxkbcommon' 'libxrandr' 'mesa' 'nss' 'pango' 'systemd-libs' 'xdg-utils'
+         'hicolor-icon-theme')
+makedepends=('git' 'nodejs' 'pnpm' 'python' 'imagemagick')
+optdepends=('zenity: native directory dialogs for local directory selection'
+            'kdialog: native directory dialogs on Plasma')
+provides=("$_name=${epoch:+$epoch:}$pkgver")
+conflicts=("$_name" "$_name-bin" "$_name-git")
+options=('!strip' '!debug')
+source=("$_name::git+$url.git#tag=$_tag"
+        'linux-desktop.patch'
+        'deepseek-harness-linux.env'
+        "$_name.sh"
+        "$_appid.desktop")
+sha256sums=('SKIP'
+            '2be3f459ec89acc8e4bd15c029dfb7066684449e80a75bd9cd4bbd0c92769072'
+            'c9783ffd57bf481f89ec59beb6047c7cf40098e4790c6098bf60370c408a4c7d'
+            '85d7ffdd59dcefc71ada8e2c826d433d2d1985ef085b07a5401235a23306d0b8'
+            '7f03e7d5e134646a988f5097ab44506eefd357e3e20c0b1fa662bb50dac6e76b')
+
+prepare() {
+  cd "$_name"
+
+  # makepkg reuses this working copy for a re-run (and --noextract skips the reset): restore
+  # the tracked files and drop everything untracked or ignored (node_modules, .desktop-build,
+  # the file the patch adds), so the patch always applies to a clean tree.
+  git checkout -- .
+  git clean -xfd
+
+  # Linux desktop target, unsigned release settings, Electron-safe sharp build and the
+  # LibreOfficeKit engine probe fix the ASAR layout needs.
+  if ! patch -Np1 --no-backup-if-mismatch -i "$srcdir/linux-desktop.patch"; then
+    echo "linux-desktop.patch does not apply to $_tag: regenerate it for this release." >&2
+    return 1
+  fi
+
+  # The Linux target reads its release settings from a dotenv file beside the app.
+  install -Dm644 "$srcdir/deepseek-harness-linux.env" apps/desktop/.env.linux
+}
+
+build() {
+  cd "$_name"
+
+  # Build with the toolchain the makedepends declare. A different Node earlier in PATH, such as
+  # a bundled runtime, carries no Node-API headers and the native addon build needs them; the
+  # same lookup also fixes which pnpm bootstraps the workspace.
+  export PATH="/usr/bin:$PATH"
+
+  # A compile cache (NODE_COMPILE_CACHE) belongs to the user's environment, not to a build: this
+  # build runs hundreds of concurrent Node children that would share one cache directory.
+  export NODE_DISABLE_COMPILE_CACHE=1
+
+  # The repository pins its own pnpm through packageManager; the system package bootstraps it.
+  pnpm install --frozen-lockfile
+
+  # Assemble the unpacked application: the Electron shell, the dsh runtime with its production
+  # dependency closure, and the bundled Node.js/pnpm/CPython payload. The target runs its own
+  # packed-runtime smoke checks (native module loading, a real image decode, a PTY, ripgrep and
+  # a DOCX/XLSX/PPTX to PDF conversion through the bundled Python) and fails when any fails.
+  pnpm --filter @deepseek-ai/dsh-desktop run package:dir
+
+  # The upstream icon is 1104x1104; hicolor wants the directory to match the real size.
+  magick apps/desktop/resources/icon.png -resize 512x512 "$srcdir/$_name-512.png"
+}
+
+package() {
+  cd "$_name"
+  local appdir=apps/desktop/.desktop-build/targets/linux-x64/artifacts/linux-unpacked
+
+  # Arch layout: private application payload under /usr/lib, entry point in /usr/bin.
+  install -d "$pkgdir/usr/lib/$_name"
+  cp -a "$appdir/." "$pkgdir/usr/lib/$_name/"
+  install -Dm755 "$srcdir/$_name.sh" "$pkgdir/usr/bin/$_name"
+
+  # The file name matches the application's Wayland app id, so desktop shells and window lists
+  # can map a running window back to this entry and its icon.
+  install -Dm644 "$srcdir/$_appid.desktop" -t "$pkgdir/usr/share/applications"
+
+  install -Dm644 "$srcdir/$_name-512.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/$_name.png"
+  install -Dm644 apps/desktop/resources/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_name.svg"
+
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+}

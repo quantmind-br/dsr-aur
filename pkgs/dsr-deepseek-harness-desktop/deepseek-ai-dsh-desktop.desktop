@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=DeepSeek Harness
+Comment=DeepSeek Harness desktop application
+Exec=deepseek-harness-desktop %U
+Icon=deepseek-harness-desktop
+Terminal=false
+StartupNotify=true
+StartupWMClass=deepseek-ai-dsh-desktop
+Categories=Development;
+Keywords=AI;agent;deepseek;harness;dsh;
+MimeType=x-scheme-handler/dsh;

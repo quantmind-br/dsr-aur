@@ -1,0 +1,11 @@
+# Only prereleases exist upstream (tags dsh-v0.2.1-rc.2); use_max_release works without a token.
+# 0.2.1-rc.2 becomes pkgver 0.2.1_rc.2 and the PKGBUILD maps it back for the tag.
+[dsr-deepseek-harness-desktop]
+source = "github"
+github = "deepseek-ai/deepseek-harness"
+use_max_release = true
+include_prereleases = true
+include_regex = 'dsh\-v\d+(\.\d+)*(\-(alpha|beta|rc)\.\d+)?'
+prefix = "dsh-v"
+from_pattern = '-'
+to_pattern = '_'
