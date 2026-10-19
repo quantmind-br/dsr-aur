@@ -264,8 +264,10 @@ find_missing_sonames() {
         continue
       fi
     fi
+    # A NEEDED entry with a slash ($ORIGIN/../lib/libpython3.12.so.1.0 in a bundled CPython) is
+    # loaded by path, never by soname lookup: no repository can ship it and nothing breaks.
     while read -r soname; do
-      if [[ -n $soname ]]; then wanted[$soname]+=" $name"; fi
+      if [[ -n $soname && $soname != */* ]]; then wanted[$soname]+=" $name"; fi
     done <"$needed"
   done
   if (( ${#wanted[@]} )); then
